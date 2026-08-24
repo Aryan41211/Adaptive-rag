@@ -1,61 +1,113 @@
 """
-API routes for RAG operations.
+RAG API routes.
+
+Both endpoints require authentication and operate strictly on the calling
+user's own data: their conversation history and their private document index.
 """
 
-from fastapi import APIRouter, UploadFile, File, Header
-from langchain_core.messages import HumanMessage, AIMessage
+from fastapi import APIRouter, Depends, File, Header, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from langchain_core.messages import AIMessage, HumanMessage
 
+from src.api.deps import CurrentUser, get_current_user
+from src.core.config import settings
+from src.core.logger import get_logger
 from src.memory.chat_history_mongo import ChatHistory
-from src.models.query_request import QueryRequest
-from src.rag.document_upload import documents
-from src.rag.graph_builder import builder
+from src.models.query_request import (
+    QueryRequest,
+    QueryResponse,
+    UploadResponse,
+)
+from src.rag.document_upload import process_upload
+from src.rag.graph_builder import run_query
 
-router = APIRouter()
+logger = get_logger(__name__)
+
+router = APIRouter(prefix="/rag", tags=["rag"])
 
 
-@router.post("/rag/query")
-async def rag_query(req: QueryRequest):
+@router.post("/query", response_model=QueryResponse)
+async def rag_query(
+    req: QueryRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> QueryResponse:
     """
-    Process a RAG query and return the result.
+    Answer a question using the adaptive RAG pipeline.
 
     Args:
-        req: The query request containing query text and session_id.
+        req: The query and the conversation it belongs to.
+        user: The authenticated caller.
 
     Returns:
-        The generated response from the RAG pipeline.
+        The assistant's answer.
     """
-    #chat_history=ChatInMemoryHistory.get_session_history(req.token)
-    chat_history = ChatHistory.get_session_history(req.session_id)
-    await chat_history.add_message(HumanMessage(content=req.query))
+    history = ChatHistory.get_session_history(user.user_id, req.session_id)
+    await history.add_message(HumanMessage(content=req.query))
 
-    # Fetch full history
-    messages = await chat_history.get_messages()
-    result = builder.invoke({
-        "messages": messages
-    })
-    output_text = result["messages"][-1].content
+    messages = await history.get_messages()
 
-    # Save assistant message
-    await chat_history.add_message(AIMessage(content=output_text))
+    # run_query awaits the graph, so long model calls never block the loop.
+    answer = await run_query(user_id=user.user_id, messages=messages)
 
-    return {"result": result["messages"][-1]}
+    await history.add_message(AIMessage(content=answer))
+
+    return QueryResponse(answer=answer, session_id=req.session_id)
 
 
-@router.post("/rag/documents/upload")
+@router.delete("/sessions/{session_id}", status_code=204)
+async def clear_session(
+    session_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> None:
+    """
+    Delete the caller's conversation history for a session.
+
+    Args:
+        session_id: The conversation to clear.
+        user: The authenticated caller.
+    """
+    await ChatHistory.get_session_history(user.user_id, session_id).clear()
+
+
+@router.post("/documents/upload", response_model=UploadResponse)
 async def upload_file(
     file: UploadFile = File(...),
-    description: str = Header(..., alias="X-Description")
-):
+    description: str = Header(
+        ...,
+        alias="X-Description",
+        min_length=1,
+        max_length=300,
+        description="Short description of the document being uploaded.",
+    ),
+    user: CurrentUser = Depends(get_current_user),
+) -> UploadResponse:
     """
-    Upload a document for RAG processing.
+    Index a PDF or TXT document into the caller's private knowledge base.
 
     Args:
-        file: The file to upload (PDF or TXT).
-        description: Document description provided via header.
+        file: The uploaded file.
+        description: A short description of its contents.
+        user: The authenticated caller.
 
     Returns:
-        Upload status.
+        A summary of what was indexed.
     """
-    status_upload = documents(description, file)
-    return {"status": status_upload}
+    # Reject oversized uploads before reading a byte, when the client
+    # declared a length.
+    if file.size is not None and file.size > settings.MAX_UPLOAD_BYTES:
+        from src.core.exceptions import FileTooLargeError
 
+        raise FileTooLargeError(
+            f"File exceeds the "
+            f"{settings.MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit."
+        )
+
+    # Parsing and embedding are blocking; run them off the event loop.
+    result = await run_in_threadpool(
+        process_upload,
+        user_id=user.user_id,
+        description=description,
+        filename=file.filename,
+        stream=file.file,
+    )
+    return UploadResponse(**result)
