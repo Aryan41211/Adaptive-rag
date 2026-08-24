@@ -24,6 +24,10 @@ pydantic>=2.11,<3
 pydantic-settings>=2.8,<3
 
 # --- Vector store & document loading ---
+# Qdrant is the persistent, multi-worker backend; FAISS is the in-process
+# development fallback used when QDRANT_URL is unset.
+langchain-qdrant>=0.2,<0.3
+qdrant-client>=1.12,<2
 faiss-cpu>=1.9,<2
 pypdf>=5.4,<7
 
