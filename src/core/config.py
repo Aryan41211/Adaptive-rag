@@ -9,7 +9,6 @@ the first user request.
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -47,15 +46,15 @@ class Settings(BaseSettings):
 
     # --- Optional integrations -------------------------------------------
     TAVILY_API_KEY: str = ""
-    MONGODB_URL: Optional[str] = None
+    MONGODB_URL: str | None = None
     MONGODB_DB_NAME: str = "adaptive_rag"
 
     # --- Vector store -----------------------------------------------------
     # When QDRANT_URL is set the vector store is persistent and shared across
     # processes. Otherwise an in-process FAISS index is used, which is lost on
     # restart and confines the service to a single worker.
-    QDRANT_URL: Optional[str] = None
-    QDRANT_API_KEY: Optional[str] = None
+    QDRANT_URL: str | None = None
+    QDRANT_API_KEY: str | None = None
     QDRANT_COLLECTION: str = "adaptive_rag_documents"
 
     # --- Models -----------------------------------------------------------
@@ -74,6 +73,23 @@ class Settings(BaseSettings):
     # --- Auth -------------------------------------------------------------
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=60, ge=1)
     JWT_ALGORITHM: str = "HS256"
+
+    # --- Rate limiting ----------------------------------------------------
+    # Bounds model spend per user. Counters are shared through MongoDB when
+    # configured, so the limit is a whole-deployment limit rather than a
+    # per-worker one.
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_QUERY_PER_MINUTE: int = Field(default=20, ge=1)
+    RATE_LIMIT_UPLOAD_PER_HOUR: int = Field(default=20, ge=1)
+    RATE_LIMIT_AUTH_PER_MINUTE: int = Field(default=10, ge=1)
+
+    # --- HTTP -------------------------------------------------------------
+    # Comma-separated browser origins allowed to call the API. Empty means no
+    # cross-origin access, which is correct for the server-rendered Streamlit
+    # UI and wrong for a browser SPA.
+    CORS_ALLOW_ORIGINS: str = ""
+    # Comma-separated hostnames the API will answer to. "*" disables the check.
+    ALLOWED_HOSTS: str = "*"
 
     # --- Ops --------------------------------------------------------------
     LOG_LEVEL: str = "INFO"
@@ -107,7 +123,7 @@ class Settings(BaseSettings):
 
     @field_validator("MONGODB_URL", "QDRANT_URL", "QDRANT_API_KEY")
     @classmethod
-    def _blank_means_unset(cls, value: Optional[str]) -> Optional[str]:
+    def _blank_means_unset(cls, value: str | None) -> str | None:
         # An empty string in .env means "not configured", not "connect to ''".
         return value.strip() or None if value else None
 
@@ -125,6 +141,21 @@ class Settings(BaseSettings):
     def qdrant_enabled(self) -> bool:
         """True when a persistent, shared vector store is configured."""
         return self.QDRANT_URL is not None
+
+    @property
+    def cors_origins(self) -> list[str]:
+        """Browser origins permitted to call the API."""
+        return [
+            origin.strip()
+            for origin in self.CORS_ALLOW_ORIGINS.split(",")
+            if origin.strip()
+        ]
+
+    @property
+    def allowed_hosts(self) -> list[str]:
+        """Hostnames the API will answer to."""
+        hosts = [h.strip() for h in self.ALLOWED_HOSTS.split(",") if h.strip()]
+        return hosts or ["*"]
 
     @property
     def vector_backend(self) -> str:
