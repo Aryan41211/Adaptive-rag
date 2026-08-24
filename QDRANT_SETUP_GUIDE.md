@@ -1,7 +1,12 @@
-> [!WARNING]
-> **Not currently used.** The application indexes documents with in-process
-> FAISS; the Qdrant code path is present but disabled. This guide is retained
-> for the planned migration to a persistent, shared vector store.
+> [!NOTE]
+> **This is now the recommended configuration.** Setting `QDRANT_URL` switches
+> the application to persistent Qdrant storage; leaving it unset falls back to
+> an in-process FAISS index suitable only for development. See the Deployment
+> section of `README.md`.
+>
+> Note that the application manages its own collection (`QDRANT_COLLECTION`,
+> default `adaptive_rag_documents`) and creates it automatically on first use,
+> so the manual collection steps below are informational only.
 
 # Qdrant Setup Guide - Free Tier Account & API Keys
 
