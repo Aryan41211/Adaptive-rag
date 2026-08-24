@@ -1,3 +1,9 @@
+> [!WARNING]
+> **Superseded.** This document describes the implementation as it was before
+> the per-user vector store was introduced. The single process-global FAISS
+> index and the shared `description.txt` file it refers to no longer exist.
+> See `README.md` for current behaviour.
+
 # Document Flow - Visual Guide
 
 ## 🔄 How Documents Flow Through the System

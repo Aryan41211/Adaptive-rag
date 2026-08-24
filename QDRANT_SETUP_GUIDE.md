@@ -1,3 +1,8 @@
+> [!WARNING]
+> **Not currently used.** The application indexes documents with in-process
+> FAISS; the Qdrant code path is present but disabled. This guide is retained
+> for the planned migration to a persistent, shared vector store.
+
 # Qdrant Setup Guide - Free Tier Account & API Keys
 
 ## 📋 Overview
