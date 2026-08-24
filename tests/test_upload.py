@@ -120,7 +120,9 @@ def test_second_upload_keeps_the_first_searchable():
 
     assert result["total_chunks"] == 2
     index = vector_store.get_index("user-a")
-    found = {d.page_content for d in index.vectorstore.similarity_search("document", k=5)}
+    found = {
+        d.page_content for d in index.vectorstore.similarity_search("document", k=5)
+    }
     assert any("penguins" in text for text in found)
     assert any("volcanoes" in text for text in found)
 

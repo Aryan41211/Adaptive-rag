@@ -119,7 +119,4 @@ def _user_ids():
     """Resolve the registered users' ids."""
     from src.db import users as user_store
 
-    return [
-        document["user_id"]
-        for document in user_store._memory_users.values()
-    ]
+    return [document["user_id"] for document in user_store._memory_users.values()]

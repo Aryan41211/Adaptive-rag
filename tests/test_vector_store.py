@@ -23,7 +23,9 @@ def _docs(*texts):
 
 def _retrieved(user_id, query):
     retriever = vector_store.get_retriever(user_id)
-    return [] if retriever is None else [d.page_content for d in retriever.invoke(query)]
+    return (
+        [] if retriever is None else [d.page_content for d in retriever.invoke(query)]
+    )
 
 
 # --- empty state -----------------------------------------------------------
@@ -198,8 +200,6 @@ def test_qdrant_is_selected_when_configured(monkeypatch):
 
     monkeypatch.setattr(settings, "QDRANT_URL", "http://localhost:6333")
     # Avoid opening a real connection just to check selection.
-    monkeypatch.setattr(
-        module.QdrantBackend, "__init__", lambda self, **kw: None
-    )
+    monkeypatch.setattr(module.QdrantBackend, "__init__", lambda self, **kw: None)
     vector_store.set_backend(None)
     assert vector_store.get_backend().name == "qdrant"

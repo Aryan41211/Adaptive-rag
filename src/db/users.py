@@ -8,7 +8,7 @@ the same async interface.
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from src.core.logger import get_logger
 from src.db.mongo_client import get_database
@@ -32,7 +32,7 @@ async def _ensure_indexes() -> None:
         await db["users"].create_index("username_lower", unique=True)
 
 
-async def get_user_by_username(username: str) -> Optional[dict[str, Any]]:
+async def get_user_by_username(username: str) -> dict[str, Any] | None:
     """
     Look up a user by username, case-insensitively.
 

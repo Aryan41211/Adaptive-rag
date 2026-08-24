@@ -8,7 +8,7 @@ downstream layer uses to scope data to its owner.
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any
 
 import bcrypt
 import jwt
@@ -36,9 +36,7 @@ def hash_password(password: str) -> str:
     """
     encoded = password.encode("utf-8")
     if len(encoded) > MAX_PASSWORD_BYTES:
-        raise ValueError(
-            f"Password must be at most {MAX_PASSWORD_BYTES} bytes."
-        )
+        raise ValueError(f"Password must be at most {MAX_PASSWORD_BYTES} bytes.")
     return bcrypt.hashpw(encoded, bcrypt.gensalt()).decode("utf-8")
 
 
@@ -66,7 +64,7 @@ def verify_password(password: str, password_hash: str) -> bool:
 def create_access_token(
     user_id: str,
     username: str,
-    expires_delta: Optional[timedelta] = None,
+    expires_delta: timedelta | None = None,
 ) -> str:
     """
     Issue a signed JWT access token.
@@ -81,8 +79,7 @@ def create_access_token(
     """
     now = datetime.now(timezone.utc)
     expire = now + (
-        expires_delta
-        or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     payload: dict[str, Any] = {
         "sub": user_id,

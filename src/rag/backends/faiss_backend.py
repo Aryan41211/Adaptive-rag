@@ -8,7 +8,6 @@ which is why a deployment using this backend must run exactly one worker.
 
 import threading
 from dataclasses import dataclass, field
-from typing import Optional
 
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
@@ -84,7 +83,7 @@ class FaissBackend(VectorStoreBackend):
             )
             return index.chunk_count
 
-    def get_retriever(self, user_id: str) -> Optional[VectorStoreRetriever]:
+    def get_retriever(self, user_id: str) -> VectorStoreRetriever | None:
         index = self._get_index(user_id)
         if index is None:
             return None
@@ -103,7 +102,7 @@ class FaissBackend(VectorStoreBackend):
     def has_documents(self, user_id: str) -> bool:
         return self._get_index(user_id) is not None
 
-    def reset(self, user_id: Optional[str] = None) -> None:
+    def reset(self, user_id: str | None = None) -> None:
         with self._lock:
             if user_id is None:
                 self._indexes.clear()
@@ -114,11 +113,11 @@ class FaissBackend(VectorStoreBackend):
         return True, "faiss (in-memory, single worker, not durable)"
 
     # --- internals --------------------------------------------------------
-    def _get_index(self, user_id: str) -> Optional[UserIndex]:
+    def _get_index(self, user_id: str) -> UserIndex | None:
         with self._lock:
             index = self._indexes.get(user_id)
             return index if index and index.chunk_count > 0 else None
 
-    def get_index(self, user_id: str) -> Optional[UserIndex]:
+    def get_index(self, user_id: str) -> UserIndex | None:
         """Expose the raw index. Used by tests only."""
         return self._get_index(user_id)

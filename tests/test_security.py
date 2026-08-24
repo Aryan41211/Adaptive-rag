@@ -78,6 +78,8 @@ def test_unsigned_token_rejected():
     """The 'alg: none' downgrade attack must not succeed."""
     import jwt
 
-    forged = jwt.encode({"sub": "attacker", "exp": 9999999999}, key="", algorithm="none")
+    forged = jwt.encode(
+        {"sub": "attacker", "exp": 9999999999}, key="", algorithm="none"
+    )
     with pytest.raises(AuthenticationError):
         decode_access_token(forged)

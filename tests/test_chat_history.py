@@ -65,7 +65,9 @@ async def test_clear_removes_only_that_conversation():
 
     await ChatHistory.get_session_history("user-a", "s2").clear()
 
-    assert len(await ChatHistory.get_session_history("user-a", "s1").get_messages()) == 1
+    assert (
+        len(await ChatHistory.get_session_history("user-a", "s1").get_messages()) == 1
+    )
     assert await ChatHistory.get_session_history("user-a", "s2").get_messages() == []
 
 

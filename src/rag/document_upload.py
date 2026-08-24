@@ -77,7 +77,13 @@ def _stream_to_tempfile(source: BinaryIO, extension: str) -> str:
     limit = settings.MAX_UPLOAD_BYTES
     written = 0
 
-    handle = tempfile.NamedTemporaryFile(delete=False, suffix=extension)
+    # Not a context manager on purpose: the file must stay on disk after
+    # this block so the loader can open it by path, and on Windows a
+    # NamedTemporaryFile cannot be reopened while still open. The caller
+    # unlinks it in a finally block.
+    handle = tempfile.NamedTemporaryFile(  # noqa: SIM115
+        delete=False, suffix=extension
+    )
     try:
         while True:
             chunk = source.read(_READ_CHUNK)
@@ -127,12 +133,10 @@ def _verify_content(path: str, extension: str) -> None:
 
     # .txt: must decode as UTF-8 to be usable downstream.
     try:
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(path, encoding="utf-8") as handle:
             handle.read(_READ_CHUNK)
     except UnicodeDecodeError as exc:
-        raise UnsupportedFileTypeError(
-            "Text files must be UTF-8 encoded."
-        ) from exc
+        raise UnsupportedFileTypeError("Text files must be UTF-8 encoded.") from exc
 
 
 def process_upload(
@@ -186,9 +190,7 @@ def process_upload(
     for doc in docs:
         doc.metadata["source_filename"] = safe_name
 
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000, chunk_overlap=150
-    )
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
     chunks = splitter.split_documents(docs)
     if not chunks:
         raise DocumentProcessingError(

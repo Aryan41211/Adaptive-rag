@@ -13,7 +13,6 @@ content, and one user's upload never displaces another's.
 """
 
 import threading
-from typing import Optional
 
 from langchain_core.documents import Document
 from langchain_core.tools import create_retriever_tool
@@ -26,7 +25,7 @@ from src.rag.backends.base import DEFAULT_DESCRIPTION, VectorStoreBackend
 logger = get_logger(__name__)
 
 _lock = threading.RLock()
-_backend: Optional[VectorStoreBackend] = None
+_backend: VectorStoreBackend | None = None
 
 
 def get_backend() -> VectorStoreBackend:
@@ -55,7 +54,7 @@ def get_backend() -> VectorStoreBackend:
         return _backend
 
 
-def set_backend(backend: Optional[VectorStoreBackend]) -> None:
+def set_backend(backend: VectorStoreBackend | None) -> None:
     """
     Replace the active backend. Intended for tests.
 
@@ -88,7 +87,7 @@ def add_documents(user_id: str, chunks: list[Document], description: str) -> int
     return get_backend().add_documents(user_id, chunks, description)
 
 
-def get_retriever(user_id: str) -> Optional[VectorStoreRetriever]:
+def get_retriever(user_id: str) -> VectorStoreRetriever | None:
     """
     Return a retriever restricted to one user's documents.
 
@@ -167,7 +166,7 @@ def get_retriever_tool(user_id: str):
     )
 
 
-def reset(user_id: Optional[str] = None) -> None:
+def reset(user_id: str | None = None) -> None:
     """
     Delete indexed documents.
 

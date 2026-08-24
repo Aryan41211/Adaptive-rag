@@ -22,7 +22,7 @@ the change and rebuilds its cached agent.
 
 import threading
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStoreRetriever
@@ -50,8 +50,8 @@ class QdrantBackend(VectorStoreBackend):
 
     def __init__(
         self,
-        client: Optional[QdrantClient] = None,
-        collection_name: Optional[str] = None,
+        client: QdrantClient | None = None,
+        collection_name: str | None = None,
     ):
         """
         Args:
@@ -67,7 +67,7 @@ class QdrantBackend(VectorStoreBackend):
         self._meta_collection = f"{self._collection}__meta"
         self._lock = threading.RLock()
         self._ready = False
-        self._store: Optional[QdrantVectorStore] = None
+        self._store: QdrantVectorStore | None = None
 
     # --- setup ------------------------------------------------------------
     def _vector_size(self) -> int:
@@ -193,14 +193,12 @@ class QdrantBackend(VectorStoreBackend):
             descriptions.append(description)
 
         total = self._count(user_id)
-        self._write_meta(
-            user_id, {"descriptions": descriptions, "chunk_count": total}
-        )
+        self._write_meta(user_id, {"descriptions": descriptions, "chunk_count": total})
 
         logger.info("Indexed %d chunks in Qdrant (total=%d)", len(chunks), total)
         return total
 
-    def get_retriever(self, user_id: str) -> Optional[VectorStoreRetriever]:
+    def get_retriever(self, user_id: str) -> VectorStoreRetriever | None:
         if not self.has_documents(user_id):
             return None
         return self._get_store().as_retriever(
@@ -223,7 +221,7 @@ class QdrantBackend(VectorStoreBackend):
     def has_documents(self, user_id: str) -> bool:
         return self._count(user_id) > 0
 
-    def reset(self, user_id: Optional[str] = None) -> None:
+    def reset(self, user_id: str | None = None) -> None:
         try:
             self._ensure_collections()
         except Exception as exc:  # noqa: BLE001 - nothing to reset

@@ -214,9 +214,7 @@ def test_health_reports_an_unreachable_server(fake_embeddings):
         def get_collections(self):
             raise ConnectionError("connection refused")
 
-    healthy, detail = QdrantBackend(
-        client=_DeadClient(), collection_name="x"
-    ).health()
+    healthy, detail = QdrantBackend(client=_DeadClient(), collection_name="x").health()
 
     assert healthy is False
     assert "unreachable" in detail

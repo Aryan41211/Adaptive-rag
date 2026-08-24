@@ -10,7 +10,6 @@ did not handle an upload still rebuilds its cached agent.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional
 
 from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStoreRetriever
@@ -34,7 +33,7 @@ class VectorStoreBackend(ABC):
         """
 
     @abstractmethod
-    def get_retriever(self, user_id: str) -> Optional[VectorStoreRetriever]:
+    def get_retriever(self, user_id: str) -> VectorStoreRetriever | None:
         """Return a retriever restricted to one user's documents."""
 
     @abstractmethod
@@ -50,7 +49,7 @@ class VectorStoreBackend(ABC):
         """Report whether the user has any indexed documents."""
 
     @abstractmethod
-    def reset(self, user_id: Optional[str] = None) -> None:
+    def reset(self, user_id: str | None = None) -> None:
         """Delete one user's documents, or every user's when None."""
 
     def health(self) -> tuple[bool, str]:

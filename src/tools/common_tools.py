@@ -43,7 +43,5 @@ def enhance_description_with_llm(user_description: str) -> str:
         enhanced = str(response.content).strip()
         return enhanced or cleaned
     except Exception as exc:  # noqa: BLE001 - non-fatal enhancement step
-        logger.warning(
-            "Description enhancement failed, using raw description: %s", exc
-        )
+        logger.warning("Description enhancement failed, using raw description: %s", exc)
         return cleaned

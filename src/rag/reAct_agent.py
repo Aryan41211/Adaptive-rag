@@ -12,7 +12,6 @@ invalidates it immediately.
 """
 
 import threading
-from typing import Optional
 
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain_core.prompts import PromptTemplate
@@ -32,7 +31,7 @@ _lock = threading.RLock()
 _executor_cache: dict[str, tuple[int, AgentExecutor]] = {}
 
 
-def _build_executor(user_id: str) -> Optional[AgentExecutor]:
+def _build_executor(user_id: str) -> AgentExecutor | None:
     """Construct a fresh executor bound to the user's current index."""
     retriever_tool = vector_store.get_retriever_tool(user_id)
     if retriever_tool is None:
@@ -53,7 +52,7 @@ def _build_executor(user_id: str) -> Optional[AgentExecutor]:
     )
 
 
-def get_agent_executor(user_id: str) -> Optional[AgentExecutor]:
+def get_agent_executor(user_id: str) -> AgentExecutor | None:
     """
     Return an agent executor bound to the user's current documents.
 
@@ -83,7 +82,7 @@ def get_agent_executor(user_id: str) -> Optional[AgentExecutor]:
         return executor
 
 
-def reset_cache(user_id: Optional[str] = None) -> None:
+def reset_cache(user_id: str | None = None) -> None:
     """
     Drop cached executors.
 

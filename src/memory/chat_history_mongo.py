@@ -10,7 +10,7 @@ application working without a database.
 """
 
 from datetime import datetime, timezone
-from typing import Any, List, Optional
+from typing import Any
 
 from langchain_core.messages import BaseMessage, messages_from_dict
 
@@ -70,7 +70,7 @@ class ChatMessageHistory:
             return
         await db[COLLECTION_NAME].insert_one(document)
 
-    async def get_messages(self, limit: Optional[int] = None) -> List[BaseMessage]:
+    async def get_messages(self, limit: int | None = None) -> list[BaseMessage]:
         """
         Load the most recent messages for this conversation.
 
@@ -112,9 +112,7 @@ class ChatMessageHistory:
                     "type": document["type"],
                     "data": {
                         "content": document["content"],
-                        "additional_kwargs": document.get(
-                            "additional_kwargs", {}
-                        ),
+                        "additional_kwargs": document.get("additional_kwargs", {}),
                     },
                 }
                 for document in documents
@@ -134,9 +132,7 @@ class ChatHistory:
     """Factory for owner-scoped chat histories."""
 
     @classmethod
-    def get_session_history(
-        cls, user_id: str, session_id: str
-    ) -> ChatMessageHistory:
+    def get_session_history(cls, user_id: str, session_id: str) -> ChatMessageHistory:
         """
         Get the history for a session belonging to a user.
 

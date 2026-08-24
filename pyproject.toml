@@ -1,0 +1,46 @@
+[project]
+name = "adaptive-rag"
+version = "1.0.0"
+description = "Agentic RAG service with per-user document isolation"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+exclude = [".venv", "venv", "__pycache__", ".git"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # import sorting
+    "B",    # bugbear
+    "UP",   # pyupgrade
+    "C4",   # comprehensions
+    "SIM",  # simplify
+]
+ignore = [
+    "E501",    # line length is handled by the formatter
+    "B008",    # FastAPI's Depends()/File() in defaults is the documented style
+    "SIM105",  # contextlib.suppress is not clearer here
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Streamlit pages must call set_page_config before any other import runs.
+"streamlit_app/home.py" = ["E402"]
+"streamlit_app/pages/chat.py" = ["E402"]
+# Settings are validated at import, so tests set the environment first.
+"tests/conftest.py" = ["E402"]
+# Tests favour readability over strictness.
+"tests/*" = ["B011", "SIM117"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["*/__init__.py"]
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]

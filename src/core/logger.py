@@ -11,7 +11,6 @@ request can be traced across the API, graph and retrieval layers.
 import logging
 import sys
 from contextvars import ContextVar
-from typing import Optional
 
 # Correlation id for the in-flight request, set by the API middleware.
 request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
@@ -31,7 +30,7 @@ class _RequestIdFilter(logging.Filter):
         return True
 
 
-def configure_logging(level: Optional[str] = None) -> None:
+def configure_logging(level: str | None = None) -> None:
     """
     Configure root logging. Safe to call more than once.
 

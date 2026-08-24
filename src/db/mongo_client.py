@@ -7,8 +7,6 @@ runnable without a database. The client is created lazily so that importing
 this module never opens a socket.
 """
 
-from typing import Optional
-
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 from src.core.config import settings
@@ -16,10 +14,10 @@ from src.core.logger import get_logger
 
 logger = get_logger(__name__)
 
-_client: Optional[AsyncIOMotorClient] = None
+_client: AsyncIOMotorClient | None = None
 
 
-def get_client() -> Optional[AsyncIOMotorClient]:
+def get_client() -> AsyncIOMotorClient | None:
     """
     Return the shared Motor client, creating it on first use.
 
@@ -40,7 +38,7 @@ def get_client() -> Optional[AsyncIOMotorClient]:
     return _client
 
 
-def get_database() -> Optional[AsyncIOMotorDatabase]:
+def get_database() -> AsyncIOMotorDatabase | None:
     """
     Return the application database handle.
 

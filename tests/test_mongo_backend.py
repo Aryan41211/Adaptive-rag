@@ -82,9 +82,7 @@ async def test_mongo_history_is_scoped_to_its_owner(mongo):
         HumanMessage(content="alice private")
     )
 
-    attacker = await ChatHistory.get_session_history(
-        "user-b", "shared"
-    ).get_messages()
+    attacker = await ChatHistory.get_session_history("user-b", "shared").get_messages()
     assert attacker == []
 
 
