@@ -9,6 +9,7 @@ two pages.
 """
 
 import ast
+import json
 from pathlib import Path
 
 import pytest
@@ -336,3 +337,95 @@ def test_delete_document_surfaces_errors(monkeypatch):
     with pytest.raises(api_client.ApiError) as exc:
         api_client.delete_document("nope.txt", "my-token")
     assert "No such document" in str(exc.value)
+
+
+def test_stream_query_decodes_sse_events(monkeypatch):
+    class _Stream:
+        status_code = 200
+        ok = True
+        content = b""
+
+        def iter_lines(self, decode_unicode=False):
+            yield "data: " + json.dumps({"type": "token", "text": "Hel"})
+            yield ""
+            yield "data: " + json.dumps({"type": "token", "text": "lo"})
+            yield ""
+            yield "data: " + json.dumps({"type": "done", "answer": "Hello"})
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(requests, "post", lambda url, **kwargs: _Stream())
+
+    events = list(api_client.stream_query("q", "s1", "token"))
+    assert [e["type"] for e in events] == ["token", "token", "done"]
+    assert "".join(e["text"] for e in events if e["type"] == "token") == "Hello"
+
+
+def test_stream_query_skips_malformed_frames(monkeypatch):
+    """One bad frame must not abort an answer already in flight."""
+
+    class _Stream:
+        status_code = 200
+        ok = True
+        content = b""
+
+        def iter_lines(self, decode_unicode=False):
+            yield "data: {not valid json"
+            yield "data: " + json.dumps({"type": "done", "answer": "ok"})
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(requests, "post", lambda url, **kwargs: _Stream())
+
+    events = list(api_client.stream_query("q", "s1", "token"))
+    assert [e["type"] for e in events] == ["done"]
+
+
+def test_stream_query_requests_a_streaming_response(monkeypatch):
+    """Without stream=True the client buffers and streaming is pointless."""
+    captured = {}
+
+    class _Stream:
+        status_code = 200
+        ok = True
+        content = b""
+
+        def iter_lines(self, decode_unicode=False):
+            return iter(())
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_post(url, **kwargs):
+        captured.update(kwargs)
+        return _Stream()
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    list(api_client.stream_query("q", "s1", "token"))
+
+    assert captured["stream"] is True
+    assert captured["timeout"] > 0
+    assert captured["headers"]["Authorization"] == "Bearer token"
+
+
+def test_stream_query_surfaces_a_rejected_request(monkeypatch):
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda url, **kwargs: _Response(429, {"detail": "Rate limit exceeded."}),
+    )
+
+    with pytest.raises(api_client.ApiError) as exc:
+        list(api_client.stream_query("q", "s1", "token"))
+    assert "Rate limit" in str(exc.value)
