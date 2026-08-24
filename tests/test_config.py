@@ -128,3 +128,28 @@ def test_all_prompts_used_by_the_code_exist():
         "verify_prompt",
     ):
         assert config.prompt(key).strip()
+
+
+# --- vector store selection ------------------------------------------------
+def test_faiss_is_the_default_vector_backend():
+    settings = _settings()
+    assert settings.qdrant_enabled is False
+    assert settings.vector_backend == "faiss"
+
+
+def test_blank_qdrant_url_means_not_configured():
+    """An empty QDRANT_URL must not be treated as an endpoint."""
+    settings = _settings(QDRANT_URL="", QDRANT_API_KEY="")
+    assert settings.QDRANT_URL is None
+    assert settings.QDRANT_API_KEY is None
+    assert settings.vector_backend == "faiss"
+
+
+def test_qdrant_url_selects_the_persistent_backend():
+    settings = _settings(QDRANT_URL="http://localhost:6333")
+    assert settings.qdrant_enabled is True
+    assert settings.vector_backend == "qdrant"
+
+
+def test_qdrant_collection_has_a_default():
+    assert _settings().QDRANT_COLLECTION == "adaptive_rag_documents"

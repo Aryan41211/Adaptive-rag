@@ -195,3 +195,25 @@ def test_health_endpoints(client):
     assert ready["status"] == "ok"
     assert ready["persistence"] == "not-configured"
     assert ready["web_search"] == "disabled"
+
+
+def test_readyz_reports_the_vector_backend(client):
+    body = client.get("/readyz").json()
+    assert body["vector_store"]
+    assert "faiss" in body["vector_store"]
+
+
+def test_readyz_is_unavailable_when_the_vector_store_is_unreachable(
+    client, monkeypatch
+):
+    """The service cannot answer anything without its document store."""
+    import src.main as main
+
+    monkeypatch.setattr(
+        main.vector_store, "health", lambda: (False, "qdrant unreachable")
+    )
+
+    response = client.get("/readyz")
+    assert response.status_code == 503
+    assert response.json()["status"] == "degraded"
+    assert response.json()["vector_store"] == "qdrant unreachable"
