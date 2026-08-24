@@ -172,6 +172,14 @@ Adaptive-Rag/
 │   ├── test_graph_nodes.py           # Node behaviour and degradation
 │   └── test_frontend.py              # Page structure and API client
 │
+├── evals/                            # Answer-quality evaluation harness
+│   ├── data/golden.yaml              # Golden dataset: documents + cases
+│   ├── dataset.py                    # Loading and validation
+│   ├── metrics.py                    # Deterministic scoring
+│   ├── runner.py                     # Runs cases through the real pipeline
+│   └── report.py                     # Text and JSON reports
+│
+├── deploy/Caddyfile                  # TLS reverse proxy configuration
 ├── .env.example                      # Documented configuration template
 ├── requirements.txt                  # Runtime dependencies (LangChain pinned)
 ├── requirements-dev.txt              # Test dependencies
@@ -321,7 +329,38 @@ Validation applied:
 
 ---
 
-### 5. List indexed documents
+### 5. Query (streaming)
+
+```http
+POST /rag/query/stream
+Authorization: Bearer <access_token>
+Content-Type: application/json
+
+{ "query": "What is the main topic?", "session_id": "user_session_123" }
+```
+
+Returns `text/event-stream`. Each frame is `data: {json}` followed by a blank
+line. Same pipeline, same quota as `/rag/query`.
+
+| Event | Meaning |
+|---|---|
+| `token` | A fragment of the answer: `{"type":"token","text":"..."}` |
+| `restart` | Discard the answer so far and start again. Emitted when verification rejects an answer and it is regenerated |
+| `citations` | The sources the answer was grounded in |
+| `usage` | Token counts and estimated cost for the turn |
+| `error` | The turn failed; the response has already begun, so this cannot be a status code |
+| `done` | Complete, carrying the full answer, citations and usage |
+
+A turn makes several model calls, so the wait before the first token is
+noticeable; streaming makes it visible progress rather than silence. Only the
+answer-producing nodes stream — the classifier and grader also call models,
+but their output is internal routing data.
+
+Failed streams are not written to the conversation history.
+
+---
+
+### 6. List indexed documents
 
 ```http
 GET /rag/documents
@@ -338,7 +377,7 @@ Authorization: Bearer <access_token>
 
 ---
 
-### 6. Delete a document
+### 7. Delete a document
 
 ```http
 DELETE /rag/documents/{filename}
@@ -353,7 +392,7 @@ document
 
 ---
 
-### 7. Delete your account
+### 8. Delete your account
 
 ```http
 DELETE /auth/me
@@ -367,7 +406,7 @@ record, then revokes the calling token.
 
 ---
 
-### 8. Sign out
+### 9. Sign out
 
 ```http
 POST /auth/logout
@@ -378,7 +417,7 @@ Denylists the token until its natural expiry, on every worker.
 
 ---
 
-### 9. Usage and cost
+### 10. Usage and cost
 
 ```http
 GET /metrics
@@ -403,7 +442,7 @@ response also carries a `usage` object for that turn.
 
 ---
 
-### 10. Clear a conversation
+### 11. Clear a conversation
 
 ```http
 DELETE /rag/sessions/{session_id}
@@ -414,7 +453,7 @@ Authorization: Bearer <access_token>
 
 ---
 
-### 11. Health probes
+### 12. Health probes
 
 | Endpoint | Purpose |
 |---|---|
@@ -777,6 +816,38 @@ the real client address, which the rate limiter keys on.
 Use `DOMAIN=localhost` to try it locally; Caddy then issues an internal
 certificate rather than contacting Let's Encrypt.
 
+### Evaluating answer quality
+
+```bash
+python -m evals                        # run the golden dataset
+python -m evals --json report.json     # also write machine-readable output
+python -m evals --fail-under 0.8       # non-zero exit below that pass rate
+```
+
+Indexes a set of synthetic documents into a scratch user, runs every case
+through the real pipeline, and scores four things:
+
+| Metric | What it measures |
+|---|---|
+| Routing accuracy | Was the question sent to documents, general knowledge or search correctly? |
+| Retrieval accuracy | Did the answer cite the document that actually contains the fact? |
+| Fact accuracy | Does the answer contain the facts a correct one must? |
+| Fabrications | Did it invent an answer to a question the documents cannot answer? |
+
+The documents are synthetic and self-contained, so a case can only pass by
+genuinely retrieving them rather than recalling training data. The dataset
+includes deliberately unanswerable questions, because confident invention is
+the failure mode that matters most.
+
+Scoring is deterministic — there is no LLM judge, which would make the score
+depend on a second model and cost money on every run. The trade-off is that it
+measures whether the right facts are present, not whether the prose is good.
+
+**This calls the model provider and costs money**, so it is not part of the
+test suite or CI. The harness itself is covered by `tests/test_evals.py`.
+
+Add cases in `evals/data/golden.yaml`.
+
 ### Continuous integration
 
 `.github/workflows/ci.yml` runs on every push and pull request:
@@ -799,7 +870,8 @@ certificate rather than contacting Let's Encrypt.
 | Model pricing is a static table | Cost estimates drift when providers reprice | Update `src/core/usage.py` |
 | FAISS fallback is not durable | Applies only when `QDRANT_URL` is unset | By design; use Qdrant |
 | In-memory user/history fallback | Applies only when `MONGODB_URL` is unset | By design; use MongoDB |
-| No streaming responses | The full answer arrives at once | Planned |
+| Evaluation is not run in CI | It calls the provider and costs money | Run `python -m evals` deliberately |
+| Evaluation scoring is lexical | It checks that required facts appear, not that the prose is good | By design; an LLM judge would add cost and variance |
 
 ---
 
@@ -924,31 +996,34 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - ✅ Adaptive RAG pipeline (route → retrieve → grade → rewrite → generate → verify)
 - ✅ Per-user document upload, indexing and retrieval, with source citations
-- ✅ **Document management** — list, delete individually, or clear all
-- ✅ **Account deletion** — removes documents, history and the account record
+- ✅ **Streaming answers** over Server-Sent Events, including a restart signal
+  when verification rejects an answer mid-stream
+- ✅ **Answer-quality evaluation harness** scoring routing, retrieval, facts
+  and fabrication against a golden dataset
+- ✅ Document management — list, delete individually, or clear all
+- ✅ Account deletion — removes documents, history and the account record
 - ✅ Persistent vector storage in Qdrant, with an in-process FAISS fallback
 - ✅ Horizontal scaling — multiple workers when Qdrant and MongoDB are configured
 - ✅ JWT authentication, bcrypt hashing, and server-side sign-out
 - ✅ Per-user isolation of documents and conversation history, verified against
   both vector backends
 - ✅ Rate limiting with shared counters, bounding per-user model spend
-- ✅ **Token and cost accounting**, per request and cumulative
+- ✅ Token and cost accounting, per request and cumulative
 - ✅ Bounded retry loops (no unbounded model spend)
 - ✅ Input validation and upload hardening
 - ✅ Structured logging with request correlation ids
 - ✅ Health and readiness probes reporting backend status
 - ✅ Streamlit UI wired to the API
 - ✅ Container image and docker-compose stack, running as a non-root user
-- ✅ **TLS termination** with automatic certificates and hardening headers
+- ✅ TLS termination with automatic certificates and hardening headers
 - ✅ CI: lint, tests on two Python versions, and a Docker build smoke test
-- ✅ Automated test suite (313 tests, 94% coverage of `src/`)
+- ✅ Automated test suite (369 tests, 94% coverage of `src/`)
 
 ### Not yet done
 
 - ❌ **No end-to-end run against a live model provider** — every test uses a
-  fake. The pipeline is verified structurally, not by a real answer
-- ❌ No streaming responses; the full answer arrives at once
-- ❌ No RAG evaluation harness, so prompt changes are not measured
+  fake. The pipeline is verified structurally, not by a real answer, and the
+  evaluation harness has never been run for score
 - ❌ No distributed tracing
 - ❌ No backups of the Qdrant or MongoDB volumes
 
