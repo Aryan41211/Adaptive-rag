@@ -71,6 +71,35 @@ services:
     depends_on:
       - api
 
+  # Opt-in TLS terminator. Start with:
+  #   DOMAIN=rag.example.com ACME_EMAIL=you@example.com   #     docker compose --profile tls up -d
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["tls"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Compose interpolates the whole file regardless of the active
+      # profile, so this cannot be a required variable. localhost makes
+      # Caddy issue an internal certificate instead of calling Let's
+      # Encrypt, which is the right default for a local trial.
+      DOMAIN: ${DOMAIN:-localhost}
+      # Must never be empty: Caddy fails to parse an argument-less
+      # `email` directive. Only used for a public domain, where Let's
+      # Encrypt sends certificate expiry notices - set a real address.
+      ACME_EMAIL: ${ACME_EMAIL:-admin@localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - ui
+
 volumes:
   qdrant_data:
   mongo_data:
+  caddy_data:
+  caddy_config:

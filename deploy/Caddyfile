@@ -1,0 +1,70 @@
+# Reverse proxy terminating TLS in front of the API and UI.
+#
+# Caddy obtains and renews certificates from Let's Encrypt automatically, so
+# the only configuration needed is a real domain pointing at this host and an
+# email address for expiry notices. Both come from the environment:
+#
+#   DOMAIN=rag.example.com
+#   ACME_EMAIL=you@example.com
+#
+# For a local trial use DOMAIN=localhost, which makes Caddy issue an internal
+# certificate instead of contacting Let's Encrypt.
+
+{
+	# Compose always supplies a non-empty value: an unset or empty ACME_EMAIL
+	# would leave this directive without an argument and fail to parse.
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# The app is served over TLS only, so HSTS is safe to assert.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# API. Caddy sets X-Forwarded-* automatically, which is what lets the
+	# application see the real client address its rate limiter keys on.
+	handle /auth/* {
+		reverse_proxy api:8000
+	}
+
+	handle /rag/* {
+		reverse_proxy api:8000
+	}
+
+	handle /metrics {
+		reverse_proxy api:8000
+	}
+
+	handle /healthz {
+		reverse_proxy api:8000
+	}
+
+	handle /readyz {
+		reverse_proxy api:8000
+	}
+
+	handle /docs* {
+		reverse_proxy api:8000
+	}
+
+	handle /redoc* {
+		reverse_proxy api:8000
+	}
+
+	handle /openapi.json {
+		reverse_proxy api:8000
+	}
+
+	# Everything else is the Streamlit UI, which needs websocket upgrades.
+	# reverse_proxy passes these through without extra configuration.
+	handle {
+		reverse_proxy ui:8501
+	}
+}
