@@ -10,16 +10,19 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
-from fastapi.exceptions import RequestValidationError
 from fastapi.concurrency import run_in_threadpool
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from src.api import ratelimit
 from src.api.auth_routes import router as auth_router
 from src.api.routes import router as rag_router
 from src.core.config import settings
 from src.core.exceptions import AdaptiveRagError
 from src.core.logger import configure_logging, get_logger, request_id_var
-from src.db import mongo_client
+from src.db import mongo_client, revoked_tokens
 from src.rag import vector_store
 
 configure_logging()
@@ -38,6 +41,12 @@ async def lifespan(app: FastAPI):
         "enabled" if settings.web_search_enabled else "disabled",
     )
 
+    if settings.RATE_LIMIT_ENABLED and not settings.persistence_enabled:
+        logger.warning(
+            "Rate limit counters are per-process: without MONGODB_URL the "
+            "effective limit is multiplied by the number of workers."
+        )
+
     if not settings.qdrant_enabled:
         logger.warning(
             "QDRANT_URL is not set: documents are held in this process only. "
@@ -48,6 +57,10 @@ async def lifespan(app: FastAPI):
     if settings.persistence_enabled:
         if await mongo_client.ping():
             await mongo_client.ensure_indexes()
+            # TTL indexes expire spent rate-limit counters and revocation
+            # entries; without them both collections grow without bound.
+            await ratelimit.ensure_indexes()
+            await revoked_tokens.ensure_indexes()
         else:
             # Not fatal: the in-memory fallback keeps the service usable, but
             # the operator needs to know history will not survive a restart.
@@ -73,6 +86,23 @@ app = FastAPI(
 )
 
 
+if settings.allowed_hosts != ["*"]:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+
+if settings.cors_origins:
+    # Only added when origins are configured: the default of no cross-origin
+    # access is correct for the server-rendered Streamlit UI.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Description"],
+        expose_headers=["X-Request-ID"],
+        max_age=600,
+    )
+
+
 @app.middleware("http")
 async def add_request_id(request: Request, call_next):
     """Attach a correlation id to each request and its log records."""
@@ -87,14 +117,15 @@ async def add_request_id(request: Request, call_next):
 
 
 @app.exception_handler(AdaptiveRagError)
-async def handle_domain_error(
-    request: Request, exc: AdaptiveRagError
-) -> JSONResponse:
+async def handle_domain_error(request: Request, exc: AdaptiveRagError) -> JSONResponse:
     """Translate domain errors into their declared HTTP status."""
     logger.info("%s: %s", type(exc).__name__, exc.message)
-    headers = (
-        {"WWW-Authenticate": "Bearer"} if exc.status_code == 401 else None
-    )
+
+    headers: dict[str, str] | None = None
+    if exc.status_code == 401:
+        headers = {"WWW-Authenticate": "Bearer"}
+    elif exc.status_code == 429:
+        headers = {"Retry-After": str(getattr(exc, "retry_after", 60))}
     return JSONResponse(
         status_code=exc.status_code,
         content={"detail": exc.message, "error": type(exc).__name__},
@@ -112,8 +143,10 @@ async def handle_validation_error(
         content={
             "detail": "Request validation failed.",
             "errors": [
-                {"field": ".".join(str(p) for p in err["loc"][1:]),
-                 "message": err["msg"]}
+                {
+                    "field": ".".join(str(p) for p in err["loc"][1:]),
+                    "message": err["msg"],
+                }
                 for err in exc.errors()
             ],
         },
@@ -121,9 +154,7 @@ async def handle_validation_error(
 
 
 @app.exception_handler(Exception)
-async def handle_unexpected_error(
-    request: Request, exc: Exception
-) -> JSONResponse:
+async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
     """Log the failure in full, return a generic message to the client."""
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)
     return JSONResponse(
