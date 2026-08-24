@@ -107,7 +107,7 @@ def test_valid_token_passes_authentication(client, monkeypatch):
     import src.api.routes as routes
 
     async def fake_run_query(user_id, messages):
-        return "an answer", []
+        return "an answer", [], {}
 
     monkeypatch.setattr(routes, "run_query", fake_run_query)
 

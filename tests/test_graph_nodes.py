@@ -260,9 +260,12 @@ async def test_run_query_passes_the_user_id_into_state(monkeypatch):
 
     monkeypatch.setattr(graph_builder, "builder", _Builder())
 
-    answer, citations = await graph_builder.run_query("user-xyz", [_msg("hello")])
+    answer, citations, usage = await graph_builder.run_query(
+        "user-xyz", [_msg("hello")]
+    )
     assert answer == "the answer"
     assert citations == []
+    assert usage["calls"] == 0
     assert captured["user_id"] == "user-xyz"
 
 

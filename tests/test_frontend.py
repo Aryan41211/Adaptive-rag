@@ -217,9 +217,10 @@ def test_query_sends_the_bearer_token(monkeypatch):
 
     monkeypatch.setattr(requests, "post", fake_post)
 
-    answer, citations = api_client.query_backend("q", "s1", "my-token")
+    answer, citations, usage = api_client.query_backend("q", "s1", "my-token")
     assert answer == "the answer"
     assert citations == []
+    assert usage == {}
     assert captured["headers"]["Authorization"] == "Bearer my-token"
     assert captured["json"] == {"query": "q", "session_id": "s1"}
 
@@ -267,7 +268,7 @@ def test_query_returns_citations(monkeypatch):
         ),
     )
 
-    answer, citations = api_client.query_backend("q", "s1", "token")
+    answer, citations, _usage = api_client.query_backend("q", "s1", "token")
     assert answer == "grounded answer"
     assert citations[0]["source"] == "a.pdf"
 
@@ -293,3 +294,45 @@ def test_empty_body_responses_are_handled(monkeypatch):
         requests, "post", lambda url, **kwargs: _Response(204, {}, body=b"")
     )
     api_client.logout("my-token")  # must not raise
+
+
+def test_list_documents_sends_the_token(monkeypatch):
+    captured = {}
+
+    def fake_get(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return _Response(200, {"documents": [{"filename": "a.txt", "chunks": 2}]})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    documents = api_client.list_documents("my-token")
+    assert documents[0]["filename"] == "a.txt"
+    assert captured["headers"]["Authorization"] == "Bearer my-token"
+    assert captured["timeout"] > 0
+
+
+def test_delete_document_url_encodes_the_filename(monkeypatch):
+    """A filename with spaces or slashes must not corrupt the request path."""
+    captured = {}
+
+    def fake_delete(url, **kwargs):
+        captured["url"] = url
+        return _Response(200, {"chunks_deleted": 3})
+
+    monkeypatch.setattr(requests, "delete", fake_delete)
+
+    assert api_client.delete_document("my report.pdf", "my-token") == 3
+    assert "my%20report.pdf" in captured["url"]
+
+
+def test_delete_document_surfaces_errors(monkeypatch):
+    monkeypatch.setattr(
+        requests,
+        "delete",
+        lambda url, **kwargs: _Response(404, {"detail": "No such document."}),
+    )
+
+    with pytest.raises(api_client.ApiError) as exc:
+        api_client.delete_document("nope.txt", "my-token")
+    assert "No such document" in str(exc.value)

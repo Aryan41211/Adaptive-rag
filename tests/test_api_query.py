@@ -18,7 +18,7 @@ def stub_graph(monkeypatch):
 
     async def fake_run_query(user_id, messages):
         calls.append({"user_id": user_id, "messages": messages})
-        return "stub answer", []
+        return "stub answer", [], {}
 
     monkeypatch.setattr(routes, "run_query", fake_run_query)
     return calls
@@ -35,6 +35,7 @@ def test_query_returns_an_answer(client, auth_headers, stub_graph):
         "answer": "stub answer",
         "session_id": "s1",
         "citations": [],
+        "usage": {},
     }
 
 
@@ -219,3 +220,9 @@ def test_readyz_is_unavailable_when_the_vector_store_is_unreachable(
     assert response.status_code == 503
     assert response.json()["status"] == "degraded"
     assert response.json()["vector_store"] == "qdrant unreachable"
+
+
+@pytest.mark.parametrize("path", ["/", "/healthz", "/readyz"])
+def test_health_endpoints_accept_head(client, path):
+    """Many load balancers probe with HEAD; a 405 reads as unhealthy."""
+    assert client.head(path).status_code == 200
