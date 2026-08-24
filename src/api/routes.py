@@ -5,8 +5,11 @@ Both endpoints require authentication and operate strictly on the calling
 user's own data: their conversation history and their private document index.
 """
 
+import json
+
 from fastapi import APIRouter, Depends, File, Header, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 
 from src.api.deps import CurrentUser, get_current_user
@@ -25,7 +28,7 @@ from src.models.query_request import (
 )
 from src.rag import vector_store
 from src.rag.document_upload import process_upload
-from src.rag.graph_builder import run_query
+from src.rag.graph_builder import run_query, stream_query
 
 logger = get_logger(__name__)
 
@@ -62,6 +65,77 @@ async def rag_query(
         session_id=req.session_id,
         citations=[Citation(**citation) for citation in citations],
         usage=usage,
+    )
+
+
+# An SSE frame is "data: <payload>" followed by a blank line.
+_SSE_TERMINATOR = "\n\n"
+
+
+def _sse(event: dict) -> str:
+    """
+    Encode one event in the Server-Sent Events wire format.
+
+    Args:
+        event: The event to send.
+
+    Returns:
+        A complete SSE frame.
+    """
+    return "data: " + json.dumps(event, ensure_ascii=False) + _SSE_TERMINATOR
+
+
+@router.post("/query/stream")
+async def rag_query_stream(
+    req: QueryRequest,
+    user: CurrentUser = Depends(query_rate_limit()),
+) -> StreamingResponse:
+    """
+    Answer a question, streaming the reply as it is produced.
+
+    Same pipeline and same quota as ``/rag/query``; only the delivery differs.
+    A turn runs several model calls, so the wait before the first token is
+    noticeable and streaming makes it visible progress rather than silence.
+
+    Args:
+        req: The query and the conversation it belongs to.
+        user: The authenticated caller.
+
+    Returns:
+        A ``text/event-stream`` of JSON events.
+    """
+    history = ChatHistory.get_session_history(user.user_id, req.session_id)
+    await history.add_message(HumanMessage(content=req.query))
+    messages = await history.get_messages()
+
+    async def events():
+        answer = ""
+        try:
+            async for event in stream_query(user_id=user.user_id, messages=messages):
+                if event["type"] == "done":
+                    answer = event["answer"]
+                yield _sse(event)
+        except Exception as exc:  # noqa: BLE001 - the response has begun
+            # Headers are already sent, so an error cannot become a status
+            # code; it has to reach the client as an event.
+            logger.exception("Streaming failed mid-response: %s", exc)
+            yield _sse({"type": "error", "message": "The assistant failed."})
+
+        # Persist only a completed answer: a half-streamed reply that failed
+        # should not enter the conversation as if it had succeeded.
+        if answer:
+            await history.add_message(AIMessage(content=answer))
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Tells nginx-style proxies not to buffer, which would defeat
+            # streaming entirely.
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
