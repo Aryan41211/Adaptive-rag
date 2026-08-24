@@ -10,10 +10,12 @@ from fastapi.concurrency import run_in_threadpool
 from langchain_core.messages import AIMessage, HumanMessage
 
 from src.api.deps import CurrentUser, get_current_user
+from src.api.ratelimit import query_rate_limit, upload_rate_limit
 from src.core.config import settings
 from src.core.logger import get_logger
 from src.memory.chat_history_mongo import ChatHistory
 from src.models.query_request import (
+    Citation,
     QueryRequest,
     QueryResponse,
     UploadResponse,
@@ -29,7 +31,7 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 @router.post("/query", response_model=QueryResponse)
 async def rag_query(
     req: QueryRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(query_rate_limit()),
 ) -> QueryResponse:
     """
     Answer a question using the adaptive RAG pipeline.
@@ -47,11 +49,15 @@ async def rag_query(
     messages = await history.get_messages()
 
     # run_query awaits the graph, so long model calls never block the loop.
-    answer = await run_query(user_id=user.user_id, messages=messages)
+    answer, citations = await run_query(user_id=user.user_id, messages=messages)
 
     await history.add_message(AIMessage(content=answer))
 
-    return QueryResponse(answer=answer, session_id=req.session_id)
+    return QueryResponse(
+        answer=answer,
+        session_id=req.session_id,
+        citations=[Citation(**citation) for citation in citations],
+    )
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
@@ -79,7 +85,7 @@ async def upload_file(
         max_length=300,
         description="Short description of the document being uploaded.",
     ),
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(upload_rate_limit()),
 ) -> UploadResponse:
     """
     Index a PDF or TXT document into the caller's private knowledge base.
