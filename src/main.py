@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from src.api.auth_routes import router as auth_router
@@ -19,6 +20,7 @@ from src.core.config import settings
 from src.core.exceptions import AdaptiveRagError
 from src.core.logger import configure_logging, get_logger, request_id_var
 from src.db import mongo_client
+from src.rag import vector_store
 
 configure_logging()
 logger = get_logger(__name__)
@@ -28,11 +30,20 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI):
     """Manage startup and shutdown of external resources."""
     logger.info(
-        "Starting Adaptive RAG API v%s (persistence=%s, web_search=%s)",
+        "Starting Adaptive RAG API v%s (vector_store=%s, persistence=%s, "
+        "web_search=%s)",
         settings.APP_VERSION,
+        settings.vector_backend,
         "mongodb" if settings.persistence_enabled else "in-memory",
         "enabled" if settings.web_search_enabled else "disabled",
     )
+
+    if not settings.qdrant_enabled:
+        logger.warning(
+            "QDRANT_URL is not set: documents are held in this process only. "
+            "They are lost on restart and the service must run a single "
+            "worker."
+        )
 
     if settings.persistence_enabled:
         if await mongo_client.ping():
@@ -154,10 +165,22 @@ async def readyz() -> JSONResponse:
     if settings.persistence_enabled:
         persistence = "ok" if await mongo_client.ping() else "unreachable"
 
+    # The vector store is the one dependency the service cannot work without,
+    # so an unreachable one makes the instance genuinely not ready.
+    vector_healthy, vector_detail = await run_in_threadpool(vector_store.health)
+
     body = {
-        "status": "ok",
+        "status": "ok" if vector_healthy else "degraded",
+        "vector_store": vector_detail,
         "persistence": persistence,
         "web_search": "enabled" if settings.web_search_enabled else "disabled",
         "version": settings.APP_VERSION,
     }
-    return JSONResponse(status_code=status.HTTP_200_OK, content=body)
+    return JSONResponse(
+        status_code=(
+            status.HTTP_200_OK
+            if vector_healthy
+            else status.HTTP_503_SERVICE_UNAVAILABLE
+        ),
+        content=body,
+    )
