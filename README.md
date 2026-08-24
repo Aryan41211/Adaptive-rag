@@ -258,9 +258,20 @@ Content-Type: application/json
 ```json
 {
   "answer": "Based on the document, the main topic is...",
-  "session_id": "user_session_123"
+  "session_id": "user_session_123",
+  "citations": [
+    { "source": "resume.pdf", "page": 2, "snippet": "..." }
+  ],
+  "usage": {
+    "calls": 4, "input_tokens": 5310, "output_tokens": 412,
+    "total_tokens": 5722, "cost_usd": 0.0173
+  }
 }
 ```
+
+`citations` lists the passages the answer was grounded in, and is empty for
+general-knowledge and web-search answers. `usage` covers every model call the
+turn made.
 
 - `query`: 1-4000 characters, must not be blank
 - `session_id`: 1-128 characters, `[A-Za-z0-9._:-]` only
@@ -310,7 +321,89 @@ Validation applied:
 
 ---
 
-### 5. Clear a conversation
+### 5. List indexed documents
+
+```http
+GET /rag/documents
+Authorization: Bearer <access_token>
+```
+
+**Response `200`:**
+```json
+{
+  "documents": [{ "filename": "resume.pdf", "chunks": 18 }],
+  "total_chunks": 18
+}
+```
+
+---
+
+### 6. Delete a document
+
+```http
+DELETE /rag/documents/{filename}
+Authorization: Bearer <access_token>
+```
+
+Removes one source document and every chunk it produced. `DELETE
+/rag/documents` (no filename) clears them all.
+
+**Status codes:** `200` deleted · `401` missing/invalid token · `404` no such
+document
+
+---
+
+### 7. Delete your account
+
+```http
+DELETE /auth/me
+Authorization: Bearer <access_token>
+```
+
+Removes the indexed documents, the conversation history and the account
+record, then revokes the calling token.
+
+**Status codes:** `204` deleted · `401` missing/invalid token
+
+---
+
+### 8. Sign out
+
+```http
+POST /auth/logout
+Authorization: Bearer <access_token>
+```
+
+Denylists the token until its natural expiry, on every worker.
+
+---
+
+### 9. Usage and cost
+
+```http
+GET /metrics
+Authorization: Bearer <access_token>
+```
+
+**Response `200`:**
+```json
+{
+  "version": "1.0.0",
+  "vector_backend": "qdrant",
+  "usage": {
+    "requests": 42, "calls": 137,
+    "input_tokens": 191204, "output_tokens": 18330,
+    "total_tokens": 209534, "cost_usd": 0.661
+  }
+}
+```
+
+Counters are per-process; with several workers, scrape each one. Every query
+response also carries a `usage` object for that turn.
+
+---
+
+### 10. Clear a conversation
 
 ```http
 DELETE /rag/sessions/{session_id}
@@ -321,7 +414,7 @@ Authorization: Bearer <access_token>
 
 ---
 
-### 6. Health probes
+### 11. Health probes
 
 | Endpoint | Purpose |
 |---|---|
@@ -577,15 +670,18 @@ Query Classification
   server-rendered UI), configurable via `CORS_ALLOW_ORIGINS` and `ALLOWED_HOSTS`
 - **Non-root container** — the image runs as uid 10001 with a healthcheck
 
+- **TLS** — the `tls` compose profile terminates HTTPS with automatic
+  certificate renewal and sets HSTS and the standard hardening headers
+- **Data deletion** — a user can list and remove individual documents, clear
+  them all, or delete their account and everything attached to it
+
 ### Still required before public exposure
 
-- **HTTPS/TLS** — terminate at a reverse proxy; tokens are bearer credentials.
-  Run uvicorn with `--proxy-headers --forwarded-allow-ips` behind it (the
-  container image already does)
 - **MongoDB credentials/TLS** — supply an authenticated connection string in
-  production
+  production; the compose stack runs it unauthenticated on a private network
 - **Secret management** — `.env` is fine for local use; use a secret manager in
   deployment
+- **Backups** — nothing backs up the Qdrant or MongoDB volumes
 
 ---
 
@@ -667,6 +763,20 @@ docker build -t adaptive-rag .
 docker run -p 8000:8000 -e OPENAI_API_KEY=... -e JWT_SECRET_KEY=... adaptive-rag
 ```
 
+### TLS
+
+```bash
+DOMAIN=rag.example.com ACME_EMAIL=you@example.com   docker compose --profile tls up -d
+```
+
+Adds a Caddy reverse proxy on :80 and :443 that obtains and renews a Let's
+Encrypt certificate automatically, redirects HTTP to HTTPS, and sets HSTS,
+`X-Content-Type-Options`, `X-Frame-Options` and `Referrer-Policy`. It forwards
+the real client address, which the rate limiter keys on.
+
+Use `DOMAIN=localhost` to try it locally; Caddy then issues an internal
+certificate rather than contacting Let's Encrypt.
+
 ### Continuous integration
 
 `.github/workflows/ci.yml` runs on every push and pull request:
@@ -683,8 +793,10 @@ docker run -p 8000:8000 -e OPENAI_API_KEY=... -e JWT_SECRET_KEY=... adaptive-rag
 
 | Limitation | Impact | Status |
 |---|---|---|
-| No TLS termination | Must sit behind a reverse proxy | Deployment concern |
 | Rate limit counters are per-process without MongoDB | The effective limit is multiplied by the worker count | Configure `MONGODB_URL` |
+| `/metrics` counters are per-process | Scrape each worker separately | By design |
+| No backups of the data volumes | Loss of the host loses the data | Operator concern |
+| Model pricing is a static table | Cost estimates drift when providers reprice | Update `src/core/usage.py` |
 | FAISS fallback is not durable | Applies only when `QDRANT_URL` is unset | By design; use Qdrant |
 | In-memory user/history fallback | Applies only when `MONGODB_URL` is unset | By design; use MongoDB |
 | No streaming responses | The full answer arrives at once | Planned |
@@ -811,31 +923,38 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ### Working and covered by tests
 
 - ✅ Adaptive RAG pipeline (route → retrieve → grade → rewrite → generate → verify)
-- ✅ Per-user document upload, indexing and retrieval, with **source citations**
+- ✅ Per-user document upload, indexing and retrieval, with source citations
+- ✅ **Document management** — list, delete individually, or clear all
+- ✅ **Account deletion** — removes documents, history and the account record
 - ✅ Persistent vector storage in Qdrant, with an in-process FAISS fallback
 - ✅ Horizontal scaling — multiple workers when Qdrant and MongoDB are configured
-- ✅ JWT authentication, bcrypt hashing, and **server-side sign-out**
+- ✅ JWT authentication, bcrypt hashing, and server-side sign-out
 - ✅ Per-user isolation of documents and conversation history, verified against
   both vector backends
-- ✅ **Rate limiting** with shared counters, bounding per-user model spend
+- ✅ Rate limiting with shared counters, bounding per-user model spend
+- ✅ **Token and cost accounting**, per request and cumulative
 - ✅ Bounded retry loops (no unbounded model spend)
 - ✅ Input validation and upload hardening
 - ✅ Structured logging with request correlation ids
 - ✅ Health and readiness probes reporting backend status
 - ✅ Streamlit UI wired to the API
-- ✅ **Container image and docker-compose stack**, running as a non-root user
-- ✅ **CI**: lint, tests on two Python versions, and a Docker build smoke test
-- ✅ Automated test suite (264 tests, 94% coverage of `src/`)
+- ✅ Container image and docker-compose stack, running as a non-root user
+- ✅ **TLS termination** with automatic certificates and hardening headers
+- ✅ CI: lint, tests on two Python versions, and a Docker build smoke test
+- ✅ Automated test suite (313 tests, 94% coverage of `src/`)
 
-### Not yet production-hardened
+### Not yet done
 
-- ❌ TLS must be terminated by a reverse proxy in front of the API
+- ❌ **No end-to-end run against a live model provider** — every test uses a
+  fake. The pipeline is verified structurally, not by a real answer
 - ❌ No streaming responses; the full answer arrives at once
 - ❌ No RAG evaluation harness, so prompt changes are not measured
-- ❌ No distributed tracing or per-request cost accounting
+- ❌ No distributed tracing
+- ❌ No backups of the Qdrant or MongoDB volumes
 
-**Suitable for:** production deployment behind a TLS-terminating reverse
-proxy, with Qdrant and MongoDB configured.
+**Suitable for:** production deployment using the `tls` compose profile,
+with Qdrant and MongoDB configured — once you have confirmed a real query
+against a live API key.
 
 ---
 
