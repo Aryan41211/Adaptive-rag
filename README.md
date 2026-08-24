@@ -157,7 +157,7 @@ Adaptive-Rag/
 │   ├── pages/chat.py                 # Chat and document upload
 │   └── utils/api_client.py           # Typed API client with timeouts
 │
-├── tests/                            # 233 tests (pytest)
+├── tests/                            # 399 tests (pytest)
 │   ├── conftest.py                   # Fixtures, fakes, state reset
 │   ├── test_config.py                # Settings validation
 │   ├── test_security.py              # Hashing and JWT
@@ -179,7 +179,11 @@ Adaptive-Rag/
 │   ├── runner.py                     # Runs cases through the real pipeline
 │   └── report.py                     # Text and JSON reports
 │
-├── deploy/Caddyfile                  # TLS reverse proxy configuration
+├── deploy/
+│   ├── Caddyfile                     # TLS reverse proxy configuration
+│   ├── backup.sh                     # MongoDB + Qdrant backup
+│   └── restore.sh                    # Restore from a backup
+│
 ├── .env.example                      # Documented configuration template
 ├── requirements.txt                  # Runtime dependencies (LangChain pinned)
 ├── requirements-dev.txt              # Test dependencies
@@ -624,6 +628,9 @@ All settings are environment variables, validated by `src/core/config.py`.
 | `RATE_LIMIT_AUTH_PER_MINUTE` | `10` | Per-address quota on login/registration |
 | `CORS_ALLOW_ORIGINS` | *(empty)* | Comma-separated browser origins; empty means no cross-origin access |
 | `ALLOWED_HOSTS` | `*` | Comma-separated hostnames the API answers to |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | *(empty)* | OTLP HTTP collector; empty disables tracing |
+| `OTEL_SERVICE_NAME` | `adaptive-rag` | Service name reported in traces |
+| `OTEL_EXPORT_TIMEOUT_SECONDS` | `5` | Bounds export and shutdown so a down collector cannot stall the app |
 | `LOG_LEVEL` | `INFO` | Root log level |
 | `API_BASE_URL` | `http://127.0.0.1:8000` | Backend URL used by the Streamlit UI |
 
@@ -720,7 +727,8 @@ Query Classification
   production; the compose stack runs it unauthenticated on a private network
 - **Secret management** — `.env` is fine for local use; use a secret manager in
   deployment
-- **Backups** — nothing backs up the Qdrant or MongoDB volumes
+- **Backup scheduling** — `deploy/backup.sh` exists and is verified, but
+  scheduling and retention are yours to configure
 
 ---
 
@@ -816,6 +824,50 @@ the real client address, which the rate limiter keys on.
 Use `DOMAIN=localhost` to try it locally; Caddy then issues an internal
 certificate rather than contacting Let's Encrypt.
 
+### Backups
+
+```bash
+./deploy/backup.sh                       # writes ./backups/<timestamp>/
+./deploy/restore.sh backups/<timestamp>  # replaces current data
+```
+
+Backup takes a gzipped MongoDB archive and one Qdrant snapshot per collection.
+Both stores support consistent online snapshots, so the stack keeps serving
+while it runs. Restore prompts before replacing anything; `FORCE=1` skips the
+prompt for automated recovery.
+
+Qdrant is reached over HTTP (`QDRANT_URL`, default `http://localhost:6333`)
+because its image ships no shell HTTP client; MongoDB is reached through the
+container, because `mongodump` must run beside the server.
+
+Schedule it however you schedule other jobs — the script is a plain
+executable and writes a self-describing directory:
+
+```
+0 3 * * *  cd /srv/adaptive-rag && ./deploy/backup.sh /backups >> /var/log/rag-backup.log 2>&1
+```
+
+Nothing rotates old backups; that is left to your retention policy.
+
+### Tracing
+
+```bash
+pip install -r requirements-tracing.txt
+# then set in .env:
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
+```
+
+Exports OpenTelemetry traces over OTLP/HTTP, instrumenting FastAPI, outbound
+HTTP and MongoDB. Each request span is annotated with the route taken, the
+number of model calls, tokens used, estimated cost, and whether the answer was
+streamed — so a slow or expensive request can be traced to the stage
+responsible.
+
+Tracing is off unless both the packages and the endpoint are present, and a
+broken or unreachable collector logs a warning rather than blocking startup.
+Health probes are excluded so polling does not swamp the traces. `/readyz`
+reports whether tracing is active.
+
 ### Evaluating answer quality
 
 ```bash
@@ -866,8 +918,8 @@ Add cases in `evals/data/golden.yaml`.
 |---|---|---|
 | Rate limit counters are per-process without MongoDB | The effective limit is multiplied by the worker count | Configure `MONGODB_URL` |
 | `/metrics` counters are per-process | Scrape each worker separately | By design |
-| No backups of the data volumes | Loss of the host loses the data | Operator concern |
 | Model pricing is a static table | Cost estimates drift when providers reprice | Update `src/core/usage.py` |
+| Backups are not scheduled or rotated | A cron entry and a retention policy are yours to set | See Backups |
 | FAISS fallback is not durable | Applies only when `QDRANT_URL` is unset | By design; use Qdrant |
 | In-memory user/history fallback | Applies only when `MONGODB_URL` is unset | By design; use MongoDB |
 | Evaluation is not run in CI | It calls the provider and costs money | Run `python -m evals` deliberately |
@@ -1016,16 +1068,19 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - ✅ Streamlit UI wired to the API
 - ✅ Container image and docker-compose stack, running as a non-root user
 - ✅ TLS termination with automatic certificates and hardening headers
+- ✅ **Backup and restore** for both data stores, verified by a destroy-and-
+  recover cycle
+- ✅ **Optional OpenTelemetry tracing**, annotated with route, tokens and cost
 - ✅ CI: lint, tests on two Python versions, and a Docker build smoke test
-- ✅ Automated test suite (369 tests, 94% coverage of `src/`)
+- ✅ Automated test suite (399 tests, 94% coverage of `src/`)
 
 ### Not yet done
 
 - ❌ **No end-to-end run against a live model provider** — every test uses a
   fake. The pipeline is verified structurally, not by a real answer, and the
   evaluation harness has never been run for score
-- ❌ No distributed tracing
-- ❌ No backups of the Qdrant or MongoDB volumes
+- ❌ Backups are not scheduled for you; the script is provided, the cron
+  entry and retention policy are not
 
 **Suitable for:** production deployment using the `tls` compose profile,
 with Qdrant and MongoDB configured — once you have confirmed a real query
