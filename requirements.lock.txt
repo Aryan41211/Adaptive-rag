@@ -1,3 +1,9 @@
+# Fully pinned environment, generated with `pip freeze`.
+#
+# Platform-specific packages carry environment markers so this file can
+# be installed on Linux (the container target) as well as on Windows.
+# Regenerate with:  pip freeze > requirements.lock.txt  then re-apply the
+# markers below.
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.3
 aiosignal==1.4.0
@@ -10,7 +16,7 @@ blinker==1.9.0
 certifi==2026.7.22
 charset-normalizer==3.5.1
 click==8.4.2
-colorama==0.4.6
+colorama==0.4.6 ; sys_platform == "win32"
 coverage==7.15.4
 dataclasses-json==0.6.7
 distro==1.9.0
@@ -25,8 +31,8 @@ h2==4.4.1
 hpack==4.2.0
 httpcore==1.0.9
 httptools==0.8.0
-httpx==0.28.1
 httpx-sse==0.4.3
+httpx==0.28.1
 hyperframe==6.1.0
 idna==3.19
 iniconfig==2.3.0
@@ -35,23 +41,23 @@ Jinja2==3.1.6
 jiter==0.16.0
 jsonpatch==1.33
 jsonpointer==3.1.1
-jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
-langchain==0.3.27
+jsonschema==4.26.0
 langchain-community==0.3.27
 langchain-core==0.3.72
 langchain-openai==0.3.28
 langchain-qdrant==0.2.1
 langchain-text-splitters==0.3.9
-langgraph==0.5.4
+langchain==0.3.27
 langgraph-checkpoint==2.1.2
 langgraph-prebuilt==0.5.2
 langgraph-sdk==0.1.74
+langgraph==0.5.4
 langsmith==0.11.1
 MarkupSafe==3.0.3
 marshmallow==3.26.2
-mongomock==4.3.0
 mongomock-motor==0.0.36
+mongomock==4.3.0
 motor==3.7.1
 multidict==6.7.1
 mypy_extensions==1.1.0
@@ -68,28 +74,28 @@ portalocker==3.2.0
 propcache==0.5.2
 protobuf==7.36.0
 pyarrow==25.0.1
-pydantic==2.13.4
 pydantic-settings==2.15.0
+pydantic==2.13.4
 pydantic_core==2.46.4
 pydeck==0.9.3
 Pygments==2.21.0
 PyJWT==2.13.0
 pymongo==4.17.0
 pypdf==6.16.2
-pytest==8.4.2
 pytest-asyncio==0.26.0
 pytest-cov==7.1.0
+pytest==8.4.2
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.3
 python-multipart==0.0.32
 pytz==2026.3.post1
-pywin32==312
+pywin32==312 ; sys_platform == "win32"
 PyYAML==6.0.3
 qdrant-client==1.19.0
 referencing==0.37.0
 regex==2026.7.19
-requests==2.34.2
 requests-toolbelt==1.0.0
+requests==2.34.2
 rpds-py==2026.6.3
 sentinels==1.1.1
 setuptools==84.0.0
