@@ -91,6 +91,14 @@ class Settings(BaseSettings):
     # Comma-separated hostnames the API will answer to. "*" disables the check.
     ALLOWED_HOSTS: str = "*"
 
+    # --- Tracing ----------------------------------------------------------
+    # Tracing is off unless an endpoint is set and the OpenTelemetry packages
+    # from requirements-tracing.txt are installed.
+    OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
+    OTEL_SERVICE_NAME: str = "adaptive-rag"
+    # Keeps a collector outage from stalling shutdown or a request.
+    OTEL_EXPORT_TIMEOUT_SECONDS: int = Field(default=5, ge=1, le=60)
+
     # --- Ops --------------------------------------------------------------
     LOG_LEVEL: str = "INFO"
     APP_VERSION: str = "1.0.0"
@@ -121,7 +129,12 @@ class Settings(BaseSettings):
             )
         return candidate
 
-    @field_validator("MONGODB_URL", "QDRANT_URL", "QDRANT_API_KEY")
+    @field_validator(
+        "MONGODB_URL",
+        "QDRANT_URL",
+        "QDRANT_API_KEY",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+    )
     @classmethod
     def _blank_means_unset(cls, value: str | None) -> str | None:
         # An empty string in .env means "not configured", not "connect to ''".
@@ -136,6 +149,11 @@ class Settings(BaseSettings):
     def persistence_enabled(self) -> bool:
         """True when MongoDB is configured for durable storage."""
         return self.MONGODB_URL is not None
+
+    @property
+    def tracing_configured(self) -> bool:
+        """True when a trace collector endpoint is configured."""
+        return self.OTEL_EXPORTER_OTLP_ENDPOINT is not None
 
     @property
     def qdrant_enabled(self) -> bool:
