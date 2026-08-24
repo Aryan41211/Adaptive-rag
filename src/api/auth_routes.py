@@ -6,9 +6,12 @@ which does not exist in this repository and made login unachievable.
 """
 
 import asyncio
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends, status
 
+from src.api.deps import CurrentUser, get_current_user
+from src.api.ratelimit import auth_rate_limit
 from src.core.config import settings
 from src.core.exceptions import AuthenticationError, UserAlreadyExistsError
 from src.core.logger import get_logger
@@ -17,7 +20,7 @@ from src.core.security import (
     hash_password,
     verify_password,
 )
-from src.db import users
+from src.db import revoked_tokens, users
 from src.models.query_request import (
     LoginRequest,
     RegisterRequest,
@@ -33,6 +36,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
     "/register",
     response_model=TokenResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(auth_rate_limit())],
 )
 async def register(payload: RegisterRequest) -> TokenResponse:
     """
@@ -63,7 +67,11 @@ async def register(payload: RegisterRequest) -> TokenResponse:
     )
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    dependencies=[Depends(auth_rate_limit())],
+)
 async def login(payload: LoginRequest) -> TokenResponse:
     """
     Exchange credentials for an access token.
@@ -82,9 +90,7 @@ async def login(payload: LoginRequest) -> TokenResponse:
     # Verify even when the user is unknown so the response time does not
     # reveal which usernames exist.
     stored_hash = user["password_hash"] if user else ""
-    matched = await asyncio.to_thread(
-        verify_password, payload.password, stored_hash
-    )
+    matched = await asyncio.to_thread(verify_password, payload.password, stored_hash)
 
     if not user or not matched:
         logger.info("Failed login attempt for '%s'", payload.username)
@@ -96,3 +102,23 @@ async def login(payload: LoginRequest) -> TokenResponse:
         expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         username=user["username"],
     )
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(user: CurrentUser = Depends(get_current_user)) -> None:
+    """
+    Revoke the caller's access token.
+
+    A JWT is self-contained, so discarding it client-side leaves a copied
+    token usable until it expires. Recording its identifier here makes the
+    token unusable immediately, on every worker.
+
+    Args:
+        user: The authenticated caller.
+    """
+    if user.jti:
+        await revoked_tokens.revoke(
+            user.jti,
+            datetime.fromtimestamp(user.expires_at, tz=timezone.utc),
+        )
+        logger.info("Revoked session for '%s'", user.username)
