@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The suite never calls a real provider; these only satisfy startup
+  # validation, which is deliberately strict about placeholder values.
+  OPENAI_API_KEY: sk-ci-not-a-real-key
+  JWT_SECRET_KEY: ci-secret-key-long-enough-for-validation-0123456789
+  MONGODB_URL: ""
+  QDRANT_URL: ""
+  LOG_LEVEL: WARNING
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install ruff==0.14.5
+      - name: Ruff (lint)
+        run: ruff check .
+      - name: Ruff (format)
+        run: ruff format --check .
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run tests
+        run: pytest --cov=src --cov-report=term --cov-report=xml -q
+      - name: Upload coverage
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: adaptive-rag:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test the image
+        run: |
+          docker run -d --name api -p 8000:8000 \
+            -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+            -e JWT_SECRET_KEY="$JWT_SECRET_KEY" \
+            adaptive-rag:ci
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/healthz && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:8000/healthz
+          curl -sf http://127.0.0.1:8000/readyz
+          docker logs api
