@@ -16,7 +16,6 @@ that user's private index.
 
 import functools
 import os
-from typing import Optional
 
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import PromptTemplate
@@ -43,9 +42,56 @@ NO_DOCUMENTS_MESSAGE = (
     "Upload a PDF or TXT file and ask again."
 )
 WEB_SEARCH_UNAVAILABLE_MESSAGE = (
-    "I can't look that up right now: web search is not configured on this "
-    "deployment."
+    "I can't look that up right now: web search is not configured on this deployment."
 )
+
+
+# Enough to identify the passage without returning the whole chunk.
+CITATION_SNIPPET_CHARS = 240
+
+
+def _citations_for(user_id: str, query: str) -> list[dict]:
+    """
+    Collect the provenance of the chunks a query matches.
+
+    The agent's tool observations are plain strings, so source metadata is
+    gathered with one direct retrieval. That is a vector search with no model
+    call, which is negligible next to the several LLM calls in a turn.
+
+    Args:
+        user_id: The owning user.
+        query: The query to attribute.
+
+    Returns:
+        Citation dictionaries, deduplicated by source and page.
+    """
+    retriever = vector_store.get_retriever(user_id)
+    if retriever is None:
+        return []
+
+    try:
+        documents = retriever.invoke(query)
+    except Exception as exc:  # noqa: BLE001 - citations are best-effort
+        logger.warning("Could not collect citations: %s", exc)
+        return []
+
+    citations: list[dict] = []
+    seen: set[tuple] = set()
+    for document in documents:
+        metadata = document.metadata or {}
+        page = metadata.get("page")
+        key = (metadata.get("source_filename"), page)
+        if key in seen:
+            continue
+        seen.add(key)
+        citations.append(
+            {
+                "source": metadata.get("source_filename") or "uploaded document",
+                "snippet": document.page_content[:CITATION_SNIPPET_CHARS].strip(),
+                "page": (page + 1) if isinstance(page, int) else None,
+            }
+        )
+    return citations
 
 
 def _latest_question(state: State) -> str:
@@ -122,6 +168,7 @@ def query_classifier(state: State) -> dict:
         "generate_attempts": 0,
         "context": None,
         "binary_score": None,
+        "citations": [],
     }
 
 
@@ -197,6 +244,7 @@ def retriever_node(state: State) -> dict:
             )
         ],
         "context": context,
+        "citations": _citations_for(user_id, query),
     }
 
 
@@ -317,9 +365,7 @@ def web_search(state: State) -> dict:
     except Exception as exc:  # noqa: BLE001 - degrade, do not fail the request
         logger.exception("Web search failed: %s", exc)
         return {
-            "messages": [
-                AIMessage(content="Web search failed. Please try again.")
-            ],
+            "messages": [AIMessage(content="Web search failed. Please try again.")],
             "context": "",
         }
 
@@ -380,7 +426,7 @@ def build_graph():
 builder = build_graph()
 
 
-async def run_query(user_id: str, messages: list) -> str:
+async def run_query(user_id: str, messages: list) -> tuple[str, list[dict]]:
     """
     Run one turn of the graph and return the answer text.
 
@@ -389,7 +435,8 @@ async def run_query(user_id: str, messages: list) -> str:
         messages: Conversation history, oldest first.
 
     Returns:
-        The assistant's answer.
+        The assistant's answer and the sources it was grounded in. The source
+        list is empty for general-knowledge and web-search answers.
 
     Raises:
         RetrievalError: If the graph fails or produces no answer.
@@ -417,10 +464,10 @@ async def run_query(user_id: str, messages: list) -> str:
             "The language model service is unavailable. Please try again."
         ) from exc
 
-    output: Optional[str] = None
+    output: str | None = None
     if result.get("messages"):
         output = str(result["messages"][-1].content)
 
     if not output:
         raise RetrievalError("The assistant produced an empty answer.")
-    return output
+    return output, list(result.get("citations") or [])

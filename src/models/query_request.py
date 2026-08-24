@@ -41,10 +41,17 @@ class QueryRequest(BaseModel):
         candidate = value.strip()
         if not _SESSION_ID_PATTERN.fullmatch(candidate):
             raise ValueError(
-                "session_id may only contain letters, digits, '.', '_', "
-                "':' and '-'."
+                "session_id may only contain letters, digits, '.', '_', ':' and '-'."
             )
         return candidate
+
+
+class Citation(BaseModel):
+    """A document chunk an answer was drawn from."""
+
+    source: str = Field(description="Filename the chunk came from.")
+    snippet: str = Field(description="Excerpt of the chunk text.")
+    page: int | None = Field(default=None, description="Page number, for PDF sources.")
 
 
 class QueryResponse(BaseModel):
@@ -52,6 +59,13 @@ class QueryResponse(BaseModel):
 
     answer: str
     session_id: str
+    citations: list[Citation] = Field(
+        default_factory=list,
+        description=(
+            "Sources the answer was grounded in. Empty for answers from "
+            "general knowledge or web search."
+        ),
+    )
 
 
 class UploadResponse(BaseModel):
