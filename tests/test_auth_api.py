@@ -23,7 +23,9 @@ def test_duplicate_registration_conflicts(client):
 
 
 def test_duplicate_registration_is_case_insensitive(client):
-    client.post("/auth/register", json={"username": "Alice", "password": "hunter2-long"})
+    client.post(
+        "/auth/register", json={"username": "Alice", "password": "hunter2-long"}
+    )
     response = client.post(
         "/auth/register", json={"username": "alice", "password": "hunter2-long"}
     )
@@ -31,7 +33,9 @@ def test_duplicate_registration_is_case_insensitive(client):
 
 
 def test_login_succeeds_with_correct_password(client):
-    client.post("/auth/register", json={"username": "alice", "password": "hunter2-long"})
+    client.post(
+        "/auth/register", json={"username": "alice", "password": "hunter2-long"}
+    )
     response = client.post(
         "/auth/login", json={"username": "alice", "password": "hunter2-long"}
     )
@@ -40,7 +44,9 @@ def test_login_succeeds_with_correct_password(client):
 
 
 def test_login_fails_with_wrong_password(client):
-    client.post("/auth/register", json={"username": "alice", "password": "hunter2-long"})
+    client.post(
+        "/auth/register", json={"username": "alice", "password": "hunter2-long"}
+    )
     response = client.post(
         "/auth/login", json={"username": "alice", "password": "wrong-password"}
     )
@@ -70,9 +76,7 @@ def test_invalid_username_rejected(client):
 
 # --- Endpoint protection ---------------------------------------------------
 def test_query_requires_authentication(client):
-    response = client.post(
-        "/rag/query", json={"query": "hello", "session_id": "s1"}
-    )
+    response = client.post("/rag/query", json={"query": "hello", "session_id": "s1"})
     assert response.status_code == 401
 
 
@@ -103,7 +107,7 @@ def test_valid_token_passes_authentication(client, monkeypatch):
     import src.api.routes as routes
 
     async def fake_run_query(user_id, messages):
-        return "an answer"
+        return "an answer", []
 
     monkeypatch.setattr(routes, "run_query", fake_run_query)
 

@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from streamlit.testing.v1 import AppTest
 
 APP_DIR = Path(__file__).resolve().parents[1] / "streamlit_app"
@@ -73,7 +72,10 @@ def test_chat_page_renders_for_an_authenticated_user():
             "access_token": "a-token",
             "username": "alice",
             "session_id": "abc123",
-            "chat_history": [("user", "hello"), ("assistant", "hi there")],
+            "chat_history": [
+                ("user", "hello", []),
+                ("assistant", "hi there", [{"source": "a.pdf", "snippet": "x"}]),
+            ],
         },
     )
     assert not app.exception, app.exception

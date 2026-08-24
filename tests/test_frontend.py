@@ -88,7 +88,9 @@ def test_switch_page_targets_exist(page):
     assert targets, f"{page.name} has no switch_page calls"
     for target in targets:
         resolved = APP_DIR / target
-        assert resolved.is_file(), f"{page.name}: switch_page('{target}') does not exist"
+        assert resolved.is_file(), (
+            f"{page.name}: switch_page('{target}') does not exist"
+        )
         # Filenames are case-sensitive on Linux containers.
         assert resolved.name in {p.name for p in resolved.parent.iterdir()}
 
@@ -112,11 +114,12 @@ def test_pages_do_not_render_server_logs():
 
 # --- API client ------------------------------------------------------------
 class _Response:
-    def __init__(self, status=200, payload=None):
+    def __init__(self, status=200, payload=None, body=b"{}"):
         self.status_code = status
         self.ok = 200 <= status < 300
         self._payload = payload if payload is not None else {}
         self.text = str(self._payload)
+        self.content = body
 
     def json(self):
         return self._payload
@@ -177,7 +180,9 @@ def test_error_detail_is_surfaced(monkeypatch):
     monkeypatch.setattr(
         requests,
         "post",
-        lambda url, **kwargs: _Response(401, {"detail": "Incorrect username or password."}),
+        lambda url, **kwargs: _Response(
+            401, {"detail": "Incorrect username or password."}
+        ),
     )
 
     with pytest.raises(api_client.ApiError) as exc:
@@ -191,8 +196,10 @@ def test_validation_errors_are_summarised(monkeypatch):
         "post",
         lambda url, **kwargs: _Response(
             422,
-            {"detail": "Request validation failed.",
-             "errors": [{"field": "password", "message": "too short"}]},
+            {
+                "detail": "Request validation failed.",
+                "errors": [{"field": "password", "message": "too short"}],
+            },
         ),
     )
 
@@ -206,11 +213,13 @@ def test_query_sends_the_bearer_token(monkeypatch):
 
     def fake_post(url, **kwargs):
         captured.update(kwargs)
-        return _Response(200, {"answer": "the answer"})
+        return _Response(200, {"answer": "the answer", "citations": []})
 
     monkeypatch.setattr(requests, "post", fake_post)
 
-    assert api_client.query_backend("q", "s1", "my-token") == "the answer"
+    answer, citations = api_client.query_backend("q", "s1", "my-token")
+    assert answer == "the answer"
+    assert citations == []
     assert captured["headers"]["Authorization"] == "Bearer my-token"
     assert captured["json"] == {"query": "q", "session_id": "s1"}
 
@@ -243,3 +252,44 @@ def test_client_targets_the_python_api_not_a_missing_rust_service():
     assert "8080" not in api_client.API_BASE_URL
     source = (APP_DIR / "utils" / "api_client.py").read_text(encoding="utf-8")
     assert "RUST_BASE_URL" not in source
+
+
+def test_query_returns_citations(monkeypatch):
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda url, **kwargs: _Response(
+            200,
+            {
+                "answer": "grounded answer",
+                "citations": [{"source": "a.pdf", "snippet": "x", "page": 2}],
+            },
+        ),
+    )
+
+    answer, citations = api_client.query_backend("q", "s1", "token")
+    assert answer == "grounded answer"
+    assert citations[0]["source"] == "a.pdf"
+
+
+def test_logout_posts_the_token(monkeypatch):
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return _Response(204, {}, body=b"")
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    api_client.logout("my-token")
+    assert captured["url"].endswith("/auth/logout")
+    assert captured["headers"]["Authorization"] == "Bearer my-token"
+
+
+def test_empty_body_responses_are_handled(monkeypatch):
+    """A 204 carries no JSON; parsing it as JSON would raise."""
+    monkeypatch.setattr(
+        requests, "post", lambda url, **kwargs: _Response(204, {}, body=b"")
+    )
+    api_client.logout("my-token")  # must not raise

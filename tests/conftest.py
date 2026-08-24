@@ -21,12 +21,12 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from langchain_core.embeddings import DeterministicFakeEmbedding  # noqa: E402
 
-from src.db import users  # noqa: E402
+from src.api import ratelimit  # noqa: E402
+from src.db import revoked_tokens, users  # noqa: E402
 from src.main import app  # noqa: E402
 from src.memory import chat_history_mongo  # noqa: E402
 from src.rag import reAct_agent, vector_store  # noqa: E402
 from src.rag.backends import faiss_backend, qdrant_backend  # noqa: E402
-
 
 # Small enough to keep tests fast; the value only has to be consistent.
 FAKE_EMBEDDING_SIZE = 64
@@ -52,6 +52,10 @@ def _clean_state(fake_embeddings):
     def _reset():
         users.reset_memory_store()
         chat_history_mongo.reset_memory_store()
+        revoked_tokens.reset_memory_store()
+        # Counters are per-process here, so without this the suite's own
+        # registrations would trip the auth limit part-way through a run.
+        ratelimit.reset_memory_counters()
         reAct_agent.reset_cache()
         # Drop the backend instance rather than clearing it: the next test
         # rebuilds from whatever settings it establishes.

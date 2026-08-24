@@ -18,7 +18,7 @@ def stub_graph(monkeypatch):
 
     async def fake_run_query(user_id, messages):
         calls.append({"user_id": user_id, "messages": messages})
-        return "stub answer"
+        return "stub answer", []
 
     monkeypatch.setattr(routes, "run_query", fake_run_query)
     return calls
@@ -31,7 +31,11 @@ def test_query_returns_an_answer(client, auth_headers, stub_graph):
         headers=auth_headers,
     )
     assert response.status_code == 200
-    assert response.json() == {"answer": "stub answer", "session_id": "s1"}
+    assert response.json() == {
+        "answer": "stub answer",
+        "session_id": "s1",
+        "citations": [],
+    }
 
 
 def test_query_is_scoped_to_the_calling_user(client, auth_headers, stub_graph):
@@ -140,9 +144,7 @@ def test_pipeline_failure_returns_a_clean_error(client, auth_headers, monkeypatc
     assert response.json()["detail"] == "Could not converge on an answer."
 
 
-def test_unexpected_failure_does_not_leak_internals(
-    client_no_raise, monkeypatch
-):
+def test_unexpected_failure_does_not_leak_internals(client_no_raise, monkeypatch):
     import src.api.routes as routes
 
     async def exploding_run_query(user_id, messages):

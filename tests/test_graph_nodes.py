@@ -103,9 +103,7 @@ def test_retriever_reports_when_nothing_is_uploaded():
 
 
 def test_retriever_agent_failure_is_contained(monkeypatch):
-    vector_store.add_documents(
-        "user-a", [Document(page_content="content")], "doc"
-    )
+    vector_store.add_documents("user-a", [Document(page_content="content")], "doc")
 
     class _ExplodingExecutor:
         def invoke(self, _payload):
@@ -134,9 +132,7 @@ def test_retriever_uses_tool_observations_as_context(monkeypatch):
                 "intermediate_steps": [(_Action(), "the retrieved evidence")],
             }
 
-    monkeypatch.setattr(
-        graph_builder, "get_agent_executor", lambda _user: _Executor()
-    )
+    monkeypatch.setattr(graph_builder, "get_agent_executor", lambda _user: _Executor())
 
     result = graph_builder.retriever_node(
         {"user_id": "user-a", "latest_query": "q", "messages": []}
@@ -182,12 +178,8 @@ def test_generate_increments_its_counter(monkeypatch):
     def _explode(_payload):
         raise RuntimeError("down")
 
-    monkeypatch.setattr(
-        graph_builder, "get_llm", lambda: RunnableLambda(_explode)
-    )
-    result = graph_builder.generate(
-        {"context": "raw context", "generate_attempts": 1}
-    )
+    monkeypatch.setattr(graph_builder, "get_llm", lambda: RunnableLambda(_explode))
+    result = graph_builder.generate({"context": "raw context", "generate_attempts": 1})
     assert result["generate_attempts"] == 2
     # Falls back to the raw context rather than failing the request.
     assert result["messages"][0].content == "raw context"
@@ -268,8 +260,9 @@ async def test_run_query_passes_the_user_id_into_state(monkeypatch):
 
     monkeypatch.setattr(graph_builder, "builder", _Builder())
 
-    answer = await graph_builder.run_query("user-xyz", [_msg("hello")])
+    answer, citations = await graph_builder.run_query("user-xyz", [_msg("hello")])
     assert answer == "the answer"
+    assert citations == []
     assert captured["user_id"] == "user-xyz"
 
 
@@ -293,3 +286,79 @@ async def test_provider_outage_becomes_a_clean_upstream_error(monkeypatch):
     with pytest.raises(RetrievalError) as exc:
         await graph_builder.run_query("user-a", [_msg("hello")])
     assert exc.value.status_code == 502
+
+
+# --- citations -------------------------------------------------------------
+def test_citations_carry_source_and_snippet(monkeypatch):
+    """Provenance is stored at upload; this is where it becomes visible."""
+    from langchain_core.documents import Document as Doc
+
+    vector_store.add_documents(
+        "user-a",
+        [
+            Doc(
+                page_content="The mitochondria is the powerhouse of the cell.",
+                metadata={"source_filename": "biology.pdf", "page": 3},
+            )
+        ],
+        "biology notes",
+    )
+
+    citations = graph_builder._citations_for("user-a", "mitochondria")
+
+    assert citations
+    assert citations[0]["source"] == "biology.pdf"
+    assert "powerhouse" in citations[0]["snippet"]
+    # Page numbers are stored zero-based and surfaced one-based.
+    assert citations[0]["page"] == 4
+
+
+def test_citations_are_empty_without_documents():
+    assert graph_builder._citations_for("user-a", "anything") == []
+
+
+def test_citations_are_deduplicated_by_source_and_page():
+    from langchain_core.documents import Document as Doc
+
+    vector_store.add_documents(
+        "user-a",
+        [
+            Doc(page_content="chunk one", metadata={"source_filename": "a.txt"}),
+            Doc(page_content="chunk two", metadata={"source_filename": "a.txt"}),
+        ],
+        "notes",
+    )
+
+    citations = graph_builder._citations_for("user-a", "chunk")
+    assert len(citations) == 1
+
+
+def test_citation_failure_does_not_break_the_answer(monkeypatch):
+    """Citations are best-effort; losing them must not lose the answer."""
+
+    class _ExplodingRetriever:
+        def invoke(self, _query):
+            raise RuntimeError("vector store down")
+
+    monkeypatch.setattr(
+        graph_builder.vector_store, "get_retriever", lambda _u: _ExplodingRetriever()
+    )
+    assert graph_builder._citations_for("user-a", "anything") == []
+
+
+def test_citations_never_cross_the_owner_boundary():
+    from langchain_core.documents import Document as Doc
+
+    vector_store.add_documents(
+        "user-a",
+        [Doc(page_content="alice secret", metadata={"source_filename": "a.txt"})],
+        "a",
+    )
+    vector_store.add_documents(
+        "user-b",
+        [Doc(page_content="bob notes", metadata={"source_filename": "b.txt"})],
+        "b",
+    )
+
+    citations = graph_builder._citations_for("user-b", "secret")
+    assert all(c["source"] != "a.txt" for c in citations)
