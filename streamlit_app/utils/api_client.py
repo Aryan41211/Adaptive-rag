@@ -1,158 +1,202 @@
 """
-API client for communicating with backend services.
+HTTP client for the Adaptive RAG API.
+
+Talks only to the FastAPI backend. The previous version called an external
+Rust auth service on port 8080 that does not exist in this repository, which
+made login impossible.
+
+Every request carries an explicit timeout: without one a stalled backend
+leaves the UI hanging forever.
 """
 
 import logging
 import os
+from typing import Any, Optional
 
 import requests
 
 logger = logging.getLogger(__name__)
 
-# Backend service URLs
-RUST_BASE_URL = "http://localhost:8080/api"
-PYTHON_BASE_URL = "http://127.0.0.1:8000"
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+
+# Auth is quick; a RAG turn runs several model calls; indexing embeds a whole
+# document.
+AUTH_TIMEOUT = 15
+QUERY_TIMEOUT = 180
+UPLOAD_TIMEOUT = 300
 
 
-def create_user(username: str, password: str, api_token: str) -> bool:
+class ApiError(Exception):
+    """Raised when the backend returns an error the user should see."""
+
+
+def _auth_header(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _detail(response: requests.Response) -> str:
+    """Extract a human-readable message from an error response."""
+    try:
+        body = response.json()
+    except ValueError:
+        return f"HTTP {response.status_code}"
+
+    # Field-level validation errors are more actionable than the generic
+    # summary that accompanies them.
+    if body.get("errors"):
+        first = body["errors"][0]
+        return f"{first.get('field', 'input')}: {first.get('message', 'invalid')}"
+
+    detail = body.get("detail")
+    if isinstance(detail, str):
+        return detail
+    return f"HTTP {response.status_code}"
+
+
+def _post(
+    path: str,
+    timeout: int,
+    *,
+    json: Optional[dict] = None,
+    files: Optional[dict] = None,
+    headers: Optional[dict] = None,
+) -> dict[str, Any]:
     """
-    Create a new user account.
+    POST to the API and return the decoded body.
 
     Args:
-        username: Username for the new account.
-        password: Password for the new account.
-        api_token: API token for authentication.
+        path: API path, e.g. ``/auth/login``.
+        timeout: Request timeout in seconds.
+        json: Optional JSON body.
+        files: Optional multipart payload.
+        headers: Optional extra headers.
 
     Returns:
-        True if user creation succeeds, False otherwise.
-    """
-    headers = {
-        "X-API-TOKEN": api_token,
-        "Content-Type": "application/json"
-    }
-    logger.info("API Token received: %s", api_token)
+        The decoded JSON response.
 
+    Raises:
+        ApiError: On connection failure, timeout or an error status.
+    """
+    url = f"{API_BASE_URL}{path}"
     try:
         response = requests.post(
-            f"{RUST_BASE_URL}/create_user",
-            json={"username": username, "password": password},
-            headers=headers,
+            url, json=json, files=files, headers=headers, timeout=timeout
         )
+    except requests.Timeout as exc:
+        logger.warning("Timeout calling %s", url)
+        raise ApiError("The server took too long to respond.") from exc
+    except requests.RequestException as exc:
+        logger.warning("Failed calling %s: %s", url, exc)
+        raise ApiError(
+            f"Could not reach the API at {API_BASE_URL}. Is the backend running?"
+        ) from exc
 
-        logger.info("Calling /create_user, status code: %s", response.status_code)
+    if not response.ok:
+        raise ApiError(_detail(response))
 
-        if response.status_code == 200:
-            try:
-                logger.debug("Create user response: %s", response.json())
-            except ValueError:
-                logger.warning("Create user returned non-JSON response")
-            return True
-        else:
-            logger.error(
-                "Create user failed: %s - %s",
-                response.status_code,
-                response.text
-            )
-            return False
-
-    except requests.RequestException as e:
-        logger.exception("Request to /create_user failed: %s", e)
-        return False
-
-
-def login_user(username: str, password: str, api_token: str) -> dict:
-    """
-    Authenticate user login.
-
-    Args:
-        username: Username to log in.
-        password: Password for the user.
-        api_token: API token for authentication.
-
-    Returns:
-        Response dictionary with JWT token if successful, None otherwise.
-    """
-    headers = {
-        "X-API-TOKEN": api_token,
-        "Content-Type": "application/json"
-    }
-    response = requests.post(
-        f"{RUST_BASE_URL}/login",
-        json={"username": username, "password": password},
-        headers=headers,
-    )
-    logger.info("Calling /login, status code: %s", response.json())
-
-    if response.status_code == 200:
+    try:
         return response.json()
+    except ValueError as exc:
+        raise ApiError("The server returned an unreadable response.") from exc
 
-    return None
 
-
-def get_api_token() -> str:
+def register(username: str, password: str) -> dict[str, Any]:
     """
-    Get an API token for authentication.
-
-    Returns:
-        API token string if successful, None otherwise.
-    """
-    response = requests.post(f"{RUST_BASE_URL}/init")
-    logger.info("Calling /init, status code: %s", response.json())
-
-    if response.status_code == 200:
-        return response.json()["api_token"]
-
-    return None
-
-
-def query_backend(query: str, session_id: str) -> str:
-    """
-    Send a query to the RAG backend.
+    Create an account.
 
     Args:
-        query: The user's query text.
-        session_id: Session identifier for tracking conversation.
+        username: Desired username.
+        password: Desired password.
 
     Returns:
-        Response text from the backend or error message.
-    """
-    url = f"{PYTHON_BASE_URL}/rag/query"
-    print(f"[query_backend] Calling: {url}")
+        The token payload.
 
-    response = requests.post(
-        url,
-        json={"query": query, "session_id": session_id},
-        allow_redirects=False
+    Raises:
+        ApiError: If registration is refused.
+    """
+    return _post(
+        "/auth/register",
+        AUTH_TIMEOUT,
+        json={"username": username, "password": password},
     )
 
-    if response.status_code == 200:
-        return response.json()["result"]["content"]
-    else:
-        return f"Error: {response.status_code} - {response.text}"
 
-
-def document_upload_rag(file, description: str) -> bool:
+def login(username: str, password: str) -> dict[str, Any]:
     """
-    Upload a document to the RAG system.
+    Authenticate and obtain an access token.
 
     Args:
-        file: File object to upload.
-        description: Description of the document.
+        username: The username.
+        password: The password.
 
     Returns:
-        True if upload succeeds, False otherwise.
+        The token payload.
+
+    Raises:
+        ApiError: If the credentials are rejected.
     """
-    headers = {
-        "X-Description": description
-    }
-    url = f"{PYTHON_BASE_URL}/rag/documents/upload"
+    return _post(
+        "/auth/login",
+        AUTH_TIMEOUT,
+        json={"username": username, "password": password},
+    )
 
-    if file:
-        files = {"file": (file.name, file, file.type)}
-        response = requests.post(url, files=files, headers=headers)
-        print(response)
 
-        if response.status_code == 200:
-            return True
+def query_backend(query: str, session_id: str, token: str) -> str:
+    """
+    Ask the RAG pipeline a question.
 
-    return False
+    Args:
+        query: The user's question.
+        session_id: The conversation identifier.
+        token: The caller's access token.
+
+    Returns:
+        The assistant's answer.
+
+    Raises:
+        ApiError: If the request fails.
+    """
+    body = _post(
+        "/rag/query",
+        QUERY_TIMEOUT,
+        json={"query": query, "session_id": session_id},
+        headers=_auth_header(token),
+    )
+    return body["answer"]
+
+
+def upload_document(file, description: str, token: str) -> dict[str, Any]:
+    """
+    Upload and index a document.
+
+    Args:
+        file: A Streamlit ``UploadedFile``.
+        description: Short description of the document.
+        token: The caller's access token.
+
+    Returns:
+        The upload summary.
+
+    Raises:
+        ApiError: If the upload is rejected.
+    """
+    return _post(
+        "/rag/documents/upload",
+        UPLOAD_TIMEOUT,
+        files={"file": (file.name, file.getvalue(), file.type)},
+        headers={**_auth_header(token), "X-Description": description},
+    )
+
+
+def api_available() -> bool:
+    """
+    Check whether the backend is reachable.
+
+    Returns:
+        True if the health endpoint responds.
+    """
+    try:
+        return requests.get(f"{API_BASE_URL}/healthz", timeout=5).ok
+    except requests.RequestException:
+        return False
