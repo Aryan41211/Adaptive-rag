@@ -486,6 +486,12 @@ All settings are environment variables, validated by `src/core/config.py`.
 | `AGENT_MAX_ITERATIONS` | `5` | ReAct agent step limit |
 | `RETRIEVER_TOP_K` | `4` | Chunks retrieved per query |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `60` | Token lifetime |
+| `RATE_LIMIT_ENABLED` | `true` | Master switch for request quotas |
+| `RATE_LIMIT_QUERY_PER_MINUTE` | `20` | Per-user query quota |
+| `RATE_LIMIT_UPLOAD_PER_HOUR` | `20` | Per-user upload quota |
+| `RATE_LIMIT_AUTH_PER_MINUTE` | `10` | Per-address quota on login/registration |
+| `CORS_ALLOW_ORIGINS` | *(empty)* | Comma-separated browser origins; empty means no cross-origin access |
+| `ALLOWED_HOSTS` | `*` | Comma-separated hostnames the API answers to |
 | `LOG_LEVEL` | `INFO` | Root log level |
 | `API_BASE_URL` | `http://127.0.0.1:8000` | Backend URL used by the Streamlit UI |
 
@@ -561,14 +567,25 @@ Query Classification
 - **Startup secret validation** — placeholder or short `JWT_SECRET_KEY` values are refused
 - **Timing-neutral login** — the password hash is verified even for unknown usernames
 
+- **Rate limiting** — per-user quotas on queries and uploads, and a per-address
+  quota on credential endpoints. Counters are shared through MongoDB, so the
+  limit applies to the deployment rather than to each worker. Exceeding a quota
+  returns `429` with `Retry-After`
+- **Token revocation** — `POST /auth/logout` denylists the token's identifier
+  until its natural expiry, honoured by every worker
+- **CORS and host allowlisting** — off by default (correct for the
+  server-rendered UI), configurable via `CORS_ALLOW_ORIGINS` and `ALLOWED_HOSTS`
+- **Non-root container** — the image runs as uid 10001 with a healthcheck
+
 ### Still required before public exposure
 
-- **HTTPS/TLS** — terminate at a reverse proxy; tokens are bearer credentials
-- **Rate limiting** — no per-user or per-IP throttle; LLM spend is currently unbounded
-- **CORS policy** — not configured (unnecessary for the server-rendered Streamlit UI, required for a browser SPA)
-- **Token revocation** — tokens are valid until expiry; there is no deny-list
-- **MongoDB credentials/TLS** — supply an authenticated connection string in production
-- **Secret management** — `.env` is fine for local use; use a secret manager in deployment
+- **HTTPS/TLS** — terminate at a reverse proxy; tokens are bearer credentials.
+  Run uvicorn with `--proxy-headers --forwarded-allow-ips` behind it (the
+  container image already does)
+- **MongoDB credentials/TLS** — supply an authenticated connection string in
+  production
+- **Secret management** — `.env` is fine for local use; use a secret manager in
+  deployment
 
 ---
 
@@ -631,7 +648,34 @@ user registered on one worker cannot log in on another.
 
 ### Containerisation
 
-No `Dockerfile` or `docker-compose.yml` is included yet.
+```bash
+cp .env.example .env          # set OPENAI_API_KEY and JWT_SECRET_KEY
+docker compose up --build
+```
+
+Brings up the API (`:8000`), the Streamlit UI (`:8501`), Qdrant (`:6333`) and
+MongoDB (`:27017`). The API waits for Qdrant and MongoDB to report healthy
+before starting, so it never boots into its non-durable fallbacks by accident.
+
+The image is multi-stage, runs as an unprivileged user, and carries a
+healthcheck against `/healthz`.
+
+To build the API image alone:
+
+```bash
+docker build -t adaptive-rag .
+docker run -p 8000:8000 -e OPENAI_API_KEY=... -e JWT_SECRET_KEY=... adaptive-rag
+```
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+| Job | What it does |
+|---|---|
+| Lint | `ruff check` and `ruff format --check` |
+| Tests | Full suite on Python 3.11 and 3.12, with coverage |
+| Docker | Builds the image and smoke-tests `/healthz` and `/readyz` |
 
 ---
 
@@ -639,13 +683,11 @@ No `Dockerfile` or `docker-compose.yml` is included yet.
 
 | Limitation | Impact | Status |
 |---|---|---|
-| No rate limiting | LLM spend is unbounded per user | Not implemented |
-| No CORS/TLS config | Must sit behind a reverse proxy | Deployment concern |
-| No token revocation | Logout is client-side only; tokens are valid until expiry | Not implemented |
-| No container image or CI | Deployment is manual | Not implemented |
+| No TLS termination | Must sit behind a reverse proxy | Deployment concern |
+| Rate limit counters are per-process without MongoDB | The effective limit is multiplied by the worker count | Configure `MONGODB_URL` |
 | FAISS fallback is not durable | Applies only when `QDRANT_URL` is unset | By design; use Qdrant |
 | In-memory user/history fallback | Applies only when `MONGODB_URL` is unset | By design; use MongoDB |
-| Answers do not cite sources | Chunk provenance is stored but not surfaced | Planned |
+| No streaming responses | The full answer arrives at once | Planned |
 
 ---
 
@@ -769,30 +811,31 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ### Working and covered by tests
 
 - ✅ Adaptive RAG pipeline (route → retrieve → grade → rewrite → generate → verify)
-- ✅ Per-user document upload, indexing and retrieval
-- ✅ **Persistent vector storage in Qdrant**, with an in-process FAISS fallback
-- ✅ **Horizontal scaling** — multiple workers when Qdrant and MongoDB are configured
-- ✅ JWT authentication with bcrypt password hashing
-- ✅ Per-user isolation of documents and conversation history, enforced at the
-  storage layer and verified against both vector backends
+- ✅ Per-user document upload, indexing and retrieval, with **source citations**
+- ✅ Persistent vector storage in Qdrant, with an in-process FAISS fallback
+- ✅ Horizontal scaling — multiple workers when Qdrant and MongoDB are configured
+- ✅ JWT authentication, bcrypt hashing, and **server-side sign-out**
+- ✅ Per-user isolation of documents and conversation history, verified against
+  both vector backends
+- ✅ **Rate limiting** with shared counters, bounding per-user model spend
 - ✅ Bounded retry loops (no unbounded model spend)
 - ✅ Input validation and upload hardening
 - ✅ Structured logging with request correlation ids
 - ✅ Health and readiness probes reporting backend status
 - ✅ Streamlit UI wired to the API
-- ✅ Automated test suite (233 tests, 95% coverage of `src/`)
+- ✅ **Container image and docker-compose stack**, running as a non-root user
+- ✅ **CI**: lint, tests on two Python versions, and a Docker build smoke test
+- ✅ Automated test suite (264 tests, 94% coverage of `src/`)
 
 ### Not yet production-hardened
 
-- ❌ No rate limiting or per-user spend caps
-- ❌ No TLS/CORS configuration, no container image, no CI pipeline
-- ❌ No token revocation
-- ❌ Answers do not cite their source chunks
+- ❌ TLS must be terminated by a reverse proxy in front of the API
+- ❌ No streaming responses; the full answer arrives at once
+- ❌ No RAG evaluation harness, so prompt changes are not measured
+- ❌ No distributed tracing or per-request cost accounting
 
-**Suitable for:** internal and small-scale production deployment behind a
-reverse proxy, with Qdrant and MongoDB configured.
-**Not yet suitable for:** untrusted public traffic without a rate limiter in
-front of it.
+**Suitable for:** production deployment behind a TLS-terminating reverse
+proxy, with Qdrant and MongoDB configured.
 
 ---
 
