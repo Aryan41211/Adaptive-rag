@@ -1,23 +1,47 @@
-langchain~=0.3.27
-langgraph~=0.5.4
-langchain_community~=0.3.27
-langchain_core~=0.3.72
-langchain_groq
-langchain_openai~=0.3.28
-faiss-cpu
-tavily-python
-bs4~=0.0.2
-requests~=2.32.4
-beautifulsoup4~=4.13.4
-pydantic~=2.11.7
-langchain-text-splitters~=0.3.9
-python-dotenv~=1.1.1
-PyYAML~=6.0.2
-fastapi
-uvicorn
-motor
-pymongo
-streamlit
-requests
-langchain-qdrant
-python-multipart
+# ---------------------------------------------------------------------------
+# Adaptive RAG - runtime dependencies
+#
+# The LangChain / LangGraph family is pinned EXACTLY: these packages ship
+# breaking changes in patch-level releases and the 1.x line is incompatible
+# with the agent API used in src/rag/. See docs/ADR-001-langchain-version.md.
+#
+# For byte-for-byte reproducible installs use requirements.lock.txt instead.
+# ---------------------------------------------------------------------------
+
+# --- LangChain / LangGraph (0.3.x line - do not bump without testing) ---
+langchain==0.3.27
+langchain-core==0.3.72
+langchain-community==0.3.27
+langchain-openai==0.3.28
+langchain-text-splitters==0.3.9
+langgraph==0.5.4
+
+# --- Web framework ---
+fastapi>=0.115,<0.120
+uvicorn[standard]>=0.34,<0.40
+python-multipart>=0.0.19,<0.1
+pydantic>=2.11,<3
+pydantic-settings>=2.8,<3
+
+# --- Vector store & document loading ---
+faiss-cpu>=1.9,<2
+pypdf>=5.4,<7
+
+# --- Web search ---
+tavily-python>=0.7,<1
+
+# --- Persistence ---
+motor>=3.6,<4
+pymongo>=4.11,<5
+
+# --- Auth ---
+PyJWT>=2.9,<3
+bcrypt>=4.2,<6
+
+# --- Config & utilities ---
+python-dotenv>=1.0,<2
+PyYAML>=6.0,<7
+requests>=2.32,<3
+
+# --- UI ---
+streamlit>=1.44,<2
