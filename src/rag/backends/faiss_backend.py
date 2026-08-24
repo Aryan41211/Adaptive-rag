@@ -102,6 +102,50 @@ class FaissBackend(VectorStoreBackend):
     def has_documents(self, user_id: str) -> bool:
         return self._get_index(user_id) is not None
 
+    def list_documents(self, user_id: str) -> list[dict]:
+        index = self._get_index(user_id)
+        if index is None:
+            return []
+
+        counts: dict[str, int] = {}
+        with self._lock:
+            for document in index.vectorstore.docstore._dict.values():
+                name = (document.metadata or {}).get(
+                    "source_filename", "uploaded document"
+                )
+                counts[name] = counts.get(name, 0) + 1
+        return [
+            {"filename": name, "chunks": count}
+            for name, count in sorted(counts.items())
+        ]
+
+    def delete_document(self, user_id: str, filename: str) -> int:
+        with self._lock:
+            index = self._get_index(user_id)
+            if index is None:
+                return 0
+
+            store = index.vectorstore
+            doomed = [
+                doc_id
+                for doc_id, document in store.docstore._dict.items()
+                if (document.metadata or {}).get("source_filename") == filename
+            ]
+            if not doomed:
+                return 0
+
+            store.delete(doomed)
+            index.chunk_count = max(index.chunk_count - len(doomed), 0)
+            # Bump the version so the cached agent is rebuilt against the
+            # reduced index rather than continuing to serve deleted content.
+            index.version += 1
+
+            if index.chunk_count == 0:
+                self._indexes.pop(user_id, None)
+
+            logger.info("Deleted %d chunks for '%s'", len(doomed), filename)
+            return len(doomed)
+
     def reset(self, user_id: str | None = None) -> None:
         with self._lock:
             if user_id is None:

@@ -166,6 +166,33 @@ def get_retriever_tool(user_id: str):
     )
 
 
+def list_documents(user_id: str) -> list[dict]:
+    """
+    Summarise the documents a user has indexed.
+
+    Args:
+        user_id: The owning user.
+
+    Returns:
+        One entry per source file, with its chunk count.
+    """
+    return get_backend().list_documents(user_id)
+
+
+def delete_document(user_id: str, filename: str) -> int:
+    """
+    Remove one source document from a user's index.
+
+    Args:
+        user_id: The owning user.
+        filename: The source filename to remove.
+
+    Returns:
+        The number of chunks deleted; 0 if no such document exists.
+    """
+    return get_backend().delete_document(user_id, filename)
+
+
 def reset(user_id: str | None = None) -> None:
     """
     Delete indexed documents.
@@ -209,7 +236,9 @@ __all__ = [
     "get_index",
     "get_retriever",
     "get_retriever_tool",
+    "delete_document",
     "get_version",
+    "list_documents",
     "has_documents",
     "health",
     "reset",

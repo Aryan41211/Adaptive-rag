@@ -49,6 +49,23 @@ class VectorStoreBackend(ABC):
         """Report whether the user has any indexed documents."""
 
     @abstractmethod
+    def list_documents(self, user_id: str) -> list[dict]:
+        """
+        Summarise the documents a user has indexed.
+
+        Returns one entry per source file, with its chunk count. Users cannot
+        review or remove what they have uploaded without this.
+        """
+
+    @abstractmethod
+    def delete_document(self, user_id: str, filename: str) -> int:
+        """
+        Remove one source document from a user's index.
+
+        Returns the number of chunks deleted, 0 if no such document exists.
+        """
+
+    @abstractmethod
     def reset(self, user_id: str | None = None) -> None:
         """Delete one user's documents, or every user's when None."""
 

@@ -221,6 +221,77 @@ class QdrantBackend(VectorStoreBackend):
     def has_documents(self, user_id: str) -> bool:
         return self._count(user_id) > 0
 
+    def list_documents(self, user_id: str) -> list[dict]:
+        if not self.has_documents(user_id):
+            return []
+
+        counts: dict[str, int] = {}
+        offset = None
+        try:
+            while True:
+                points, offset = self._client.scroll(
+                    collection_name=self._collection,
+                    scroll_filter=self._user_filter(user_id),
+                    limit=256,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                for point in points:
+                    metadata = (point.payload or {}).get("metadata", {})
+                    name = metadata.get("source_filename", "uploaded document")
+                    counts[name] = counts.get(name, 0) + 1
+                if offset is None:
+                    break
+        except Exception as exc:  # noqa: BLE001 - listing is not critical
+            logger.warning("Could not list documents: %s", exc)
+            return []
+
+        return [
+            {"filename": name, "chunks": count}
+            for name, count in sorted(counts.items())
+        ]
+
+    def delete_document(self, user_id: str, filename: str) -> int:
+        before = self._count(user_id)
+        if before == 0:
+            return 0
+
+        # Both conditions are required: filtering on filename alone would let
+        # one user delete another's identically named document.
+        selector = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key=USER_ID_FIELD, match=models.MatchValue(value=user_id)
+                ),
+                models.FieldCondition(
+                    key="metadata.source_filename",
+                    match=models.MatchValue(value=filename),
+                ),
+            ]
+        )
+        try:
+            self._client.delete(
+                collection_name=self._collection,
+                points_selector=models.FilterSelector(filter=selector),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not delete document: %s", exc)
+            return 0
+
+        removed = before - self._count(user_id)
+        if removed:
+            meta = self._read_meta(user_id)
+            self._write_meta(
+                user_id,
+                {
+                    "descriptions": meta.get("descriptions") or [],
+                    "chunk_count": self._count(user_id),
+                },
+            )
+            logger.info("Deleted %d chunks for '%s'", removed, filename)
+        return removed
+
     def reset(self, user_id: str | None = None) -> None:
         try:
             self._ensure_collections()
