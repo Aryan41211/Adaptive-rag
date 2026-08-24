@@ -1,220 +1,426 @@
 """
-Graph builder module for the adaptive RAG system.
+Adaptive RAG graph.
+
+    START
+      -> query_analysis            classify the turn
+         -> retriever              answer from the user's own documents
+            -> grade -> rewrite    bounded relevance-driven retry
+                     -> generate
+         -> web_search -> generate
+         -> general_llm -> END
+      generate -> verify -> END    bounded faithfulness check
+
+Every node is scoped to ``state["user_id"]`` so retrieval only ever touches
+that user's private index.
 """
 
-from langchain_community.tools import TavilySearchResults
+import functools
+import os
+from typing import Optional
+
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import PromptTemplate
-from langgraph.constants import START, END
+from langgraph.constants import END, START
 from langgraph.graph.state import StateGraph
 
-from src.rag.reAct_agent import agent_executor
-from src.rag.retriever_setup import get_retriever
 from src.config.settings import Config
-from src.llms.openai import llm
+from src.core.config import settings
+from src.core.logger import get_logger
+from src.llms.openai import get_llm
 from src.models.grade import Grade
 from src.models.route_identifier import RouteIdentifier
 from src.models.state import State
-from src.tools.graph_tools import routing_tool, doc_tool
+from src.rag import vector_store
+from src.rag.reAct_agent import get_agent_executor
+from src.tools.graph_tools import doc_tool, routing_tool, verify_answer
+
+logger = get_logger(__name__)
 
 config = Config()
 
+NO_DOCUMENTS_MESSAGE = (
+    "I don't have any uploaded documents to search yet. "
+    "Upload a PDF or TXT file and ask again."
+)
+WEB_SEARCH_UNAVAILABLE_MESSAGE = (
+    "I can't look that up right now: web search is not configured on this "
+    "deployment."
+)
 
-# Node implementations
-def query_classifier(state: State):
+
+def _latest_question(state: State) -> str:
+    """Return the text of the most recent user message."""
+    messages = state.get("messages") or []
+    return str(messages[-1].content) if messages else ""
+
+
+@functools.lru_cache(maxsize=1)
+def _get_search_tool():
+    """Build the Tavily search tool once, if a key is configured."""
+    from langchain_community.tools import TavilySearchResults
+
+    # TavilySearchResults reads its credential from the environment.
+    os.environ["TAVILY_API_KEY"] = settings.TAVILY_API_KEY
+    return TavilySearchResults(max_results=5)
+
+
+# --------------------------------------------------------------------------
+# Nodes
+# --------------------------------------------------------------------------
+def query_classifier(state: State) -> dict:
     """
-    Classify the query to determine if it's related to indexed documents.
+    Decide how this turn should be answered.
+
+    Retrieval runs only when the user actually has an index, which avoids
+    building a throwaway index (and paying for its embeddings) on every query
+    from a user who has uploaded nothing.
 
     Args:
-        state (State): The current state of the graph.
+        state: The current graph state.
 
     Returns:
-        dict: Updated state with route and latest_query.
+        State update with ``route``, ``latest_query`` and reset counters.
     """
-    question = state["messages"][-1].content
-    retriever = get_retriever()
-    context = retriever.invoke(question)
-    print("docs received from Qdrant")
-    print(context)
+    user_id = state["user_id"]
+    question = _latest_question(state)
 
-    llm_with_structured_output = llm.with_structured_output(RouteIdentifier)
+    retriever = vector_store.get_retriever(user_id)
+    if retriever is None:
+        context = "(the user has not uploaded any documents)"
+        has_documents = False
+    else:
+        documents = retriever.invoke(question)
+        context = "\n\n".join(doc.page_content for doc in documents)
+        has_documents = True
+        logger.debug("Retrieved %d candidate chunks for routing", len(documents))
+
     classify_prompt = PromptTemplate(
         template=config.prompt("classify_prompt"),
-        input_variables=["question", "context"]
+        input_variables=["question", "context"],
     )
-    chain = classify_prompt | llm_with_structured_output
-    result = chain.invoke({"question": question, "context": context})
-    print("result received is in query classifier")
-    print(result.route)
+    chain = classify_prompt | get_llm().with_structured_output(RouteIdentifier)
 
-    return {"messages": state["messages"], "route": result.route, "latest_query": question}
+    try:
+        route = chain.invoke({"question": question, "context": context}).route
+    except Exception as exc:  # noqa: BLE001 - degrade to a safe default
+        logger.warning("Query classification failed, defaulting to general: %s", exc)
+        route = "general"
 
+    # The classifier cannot legitimately choose "index" with no index.
+    if route == "index" and not has_documents:
+        route = "general"
 
-def general_llm(state: State):
-    """
-    Fetch general common knowledge result from the LLM.
+    if route == "search" and not settings.web_search_enabled:
+        logger.info("Web search unavailable; falling back to general knowledge")
+        route = "general"
 
-    Args:
-        state (State): The current state of the graph.
-
-    Returns:
-        dict: Updated messages from LLM.
-    """
-    result = llm.invoke(state["messages"])
-    print("inside general llm")
-    print(result)
-    return {"messages": result}
-
-
-def retriever_node(state: State):
-    """
-    Retrieve results from vector stores using the reAct agent.
-
-    Args:
-        state (State): The current state of the graph.
-
-    Returns:
-        dict: Updated messages with tool calls.
-    """
-    messages = state["latest_query"]
-    result = agent_executor.invoke({"input": messages})
-
-    # Extract tool calls
-    intermediate_steps = result.get("intermediate_steps", [])
-    tool_calls = []
-    if intermediate_steps:
-        for action, tool_result in intermediate_steps:
-            tool_calls.append({
-                "tool": action.tool,
-                "input": action.tool_input,
-            })
-
-    new_message = AIMessage(
-        content=result["output"],
-        additional_kwargs={"tool_calls": tool_calls},
-    )
-
+    logger.info("Routed query to '%s'", route)
     return {
-        "messages": [new_message]
+        "route": route,
+        "latest_query": question,
+        "rewrite_attempts": 0,
+        "generate_attempts": 0,
+        "context": None,
+        "binary_score": None,
     }
 
 
-def grade(state: State):
+def general_llm(state: State) -> dict:
     """
-    Grade the results retrieved from vector stores.
+    Answer from the model's general knowledge.
 
     Args:
-        state (State): The current state of the graph.
+        state: The current graph state.
 
     Returns:
-        dict: Updated state with binary_score.
+        State update containing the answer message.
     """
+    result = get_llm().invoke(state["messages"])
+    return {"messages": [result]}
+
+
+def retriever_node(state: State) -> dict:
+    """
+    Answer from the user's own documents via the ReAct agent.
+
+    Args:
+        state: The current graph state.
+
+    Returns:
+        State update with the agent's answer and the context it used.
+    """
+    user_id = state["user_id"]
+    query = state.get("latest_query") or _latest_question(state)
+
+    executor = get_agent_executor(user_id)
+    if executor is None:
+        logger.info("Retriever requested but user has no indexed documents")
+        return {
+            "messages": [AIMessage(content=NO_DOCUMENTS_MESSAGE)],
+            "context": "",
+        }
+
+    try:
+        result = executor.invoke({"input": query})
+    except Exception as exc:  # noqa: BLE001 - surfaced as a graded answer
+        logger.exception("Retrieval agent failed: %s", exc)
+        return {
+            "messages": [
+                AIMessage(
+                    content="I couldn't search the documents just now. "
+                    "Please try again."
+                )
+            ],
+            "context": "",
+        }
+
+    output = str(result.get("output", "")).strip()
+
+    # Observations from the tool calls are the evidence the answer must be
+    # grounded in; keep them for grading and verification.
+    observations = [
+        str(observation)
+        for _action, observation in result.get("intermediate_steps", [])
+    ]
+    context = "\n\n".join(observations) if observations else output
+
+    tool_calls = [
+        {"tool": action.tool, "input": action.tool_input}
+        for action, _observation in result.get("intermediate_steps", [])
+    ]
+
+    return {
+        "messages": [
+            AIMessage(
+                content=output or NO_DOCUMENTS_MESSAGE,
+                additional_kwargs={"tool_calls": tool_calls},
+            )
+        ],
+        "context": context,
+    }
+
+
+def grade(state: State) -> dict:
+    """
+    Grade whether the retrieved context answers the question.
+
+    Args:
+        state: The current graph state.
+
+    Returns:
+        State update with ``binary_score``.
+    """
+    context = state.get("context") or ""
+    if not context.strip():
+        return {"binary_score": "no"}
+
     grading_prompt = PromptTemplate(
         template=config.prompt("grading_prompt"),
-        input_variables=["question", "context"]
+        input_variables=["question", "context"],
     )
-    context = state["messages"][-1].content
-    question = state["latest_query"]
+    chain = grading_prompt | get_llm().with_structured_output(Grade)
 
-    llm_with_grade = llm.with_structured_output(Grade)
+    try:
+        score = chain.invoke(
+            {"question": state.get("latest_query", ""), "context": context}
+        ).binary_score
+    except Exception as exc:  # noqa: BLE001 - assume relevant, don't loop
+        logger.warning("Grading failed, treating context as relevant: %s", exc)
+        score = "yes"
 
-    chain_graded = grading_prompt | llm_with_grade
-    result = chain_graded.invoke({"question": question, "context": context})
-
-    print(result)
-    return {"messages": state["messages"], "binary_score": result.binary_score}
+    logger.info("Context graded relevant=%s", score)
+    return {"binary_score": score}
 
 
-def rewrite_query(state: State):
+def rewrite_query(state: State) -> dict:
     """
-    Rewrite the query to get better retrieval results.
+    Rewrite the query to improve retrieval, counting the attempt.
 
     Args:
-        state (State): State of the question.
+        state: The current graph state.
 
     Returns:
-        dict: Updated latest_query.
+        State update with the rewritten query and incremented counter.
     """
-    query = state["latest_query"]
+    attempts = state.get("rewrite_attempts", 0) + 1
     rewrite_prompt = PromptTemplate(
         template=config.prompt("rewrite_prompt"),
-        input_variables=["query"]
+        input_variables=["query"],
     )
-    chain = rewrite_prompt | llm
-    result = chain.invoke({"query": query})
-    print(result)
+    chain = rewrite_prompt | get_llm()
 
-    return {
-        "latest_query": result.content
-    }
+    try:
+        rewritten = str(chain.invoke({"query": state["latest_query"]}).content)
+    except Exception as exc:  # noqa: BLE001 - keep the original query
+        logger.warning("Query rewrite failed, reusing original query: %s", exc)
+        rewritten = state.get("latest_query", "")
+
+    logger.info("Rewrote query (attempt %d)", attempts)
+    return {"latest_query": rewritten, "rewrite_attempts": attempts}
 
 
-def generate(state: State):
+def generate(state: State) -> dict:
     """
-    Generate the final answer for the user.
+    Produce the user-facing answer from the gathered context.
 
     Args:
-        state (State): State of the question.
+        state: The current graph state.
 
     Returns:
-        dict: Generated response.
+        State update with the answer and incremented generation counter.
     """
-    context = state["messages"][-1].content
+    attempts = state.get("generate_attempts", 0) + 1
+    context = state.get("context") or ""
+
+    if not context.strip():
+        return {
+            "messages": [AIMessage(content=NO_DOCUMENTS_MESSAGE)],
+            "generate_attempts": attempts,
+        }
 
     generate_prompt = PromptTemplate(
         template=config.prompt("generate_prompt"),
-        input_variables=["context"]
+        input_variables=["context"],
     )
+    chain = generate_prompt | get_llm()
 
-    generate_chain = generate_prompt | llm
-    result = generate_chain.invoke({"context": context})
-
-    return {"messages": [{"role": "assistant", "content": result.content}]}
-
-
-def web_search(state: State):
-    """
-    Search the web for the rewritten query.
-
-    Args:
-        state (State): The current state of the graph.
-
-    Returns:
-        dict: Search results as messages.
-    """
-    # Initialize the Tavily tool
-    search_tool = TavilySearchResults()
-
-    # Search a query
-    result = search_tool.invoke(state["latest_query"])
-
-    contents = [item["content"] for item in result if "content" in item]
-    print(contents)
+    try:
+        answer = str(chain.invoke({"context": context}).content)
+    except Exception as exc:  # noqa: BLE001 - fall back to raw context
+        logger.exception("Answer generation failed: %s", exc)
+        answer = context
 
     return {
-        "messages": [{"role": "assistant", "content": "\n\n".join(contents)}]
+        "messages": [AIMessage(content=answer)],
+        "generate_attempts": attempts,
     }
 
 
-# Build the graph
-graph = StateGraph(State)
+def web_search(state: State) -> dict:
+    """
+    Search the web for the current query.
 
-graph.add_node("query_analysis", query_classifier)
-graph.add_node("retriever", retriever_node)
-graph.add_node("grade", grade)
-graph.add_node("generate", generate)
-graph.add_node("rewrite", rewrite_query)
-graph.add_node("web_search", web_search)
-graph.add_node("general_llm", general_llm)
+    Args:
+        state: The current graph state.
 
-graph.add_edge(START, "query_analysis")
-graph.add_edge("web_search", "generate")
-graph.add_edge("retriever", "grade")
-graph.add_edge("rewrite", "retriever")
-graph.add_conditional_edges("query_analysis", routing_tool)
-graph.add_conditional_edges("grade", doc_tool)
-graph.add_edge("generate", END)
-graph.add_edge("general_llm", END)
+    Returns:
+        State update with the search results as context.
+    """
+    if not settings.web_search_enabled:
+        return {
+            "messages": [AIMessage(content=WEB_SEARCH_UNAVAILABLE_MESSAGE)],
+            "context": "",
+        }
 
-builder = graph.compile()
+    try:
+        results = _get_search_tool().invoke(state.get("latest_query", ""))
+    except Exception as exc:  # noqa: BLE001 - degrade, do not fail the request
+        logger.exception("Web search failed: %s", exc)
+        return {
+            "messages": [
+                AIMessage(content="Web search failed. Please try again.")
+            ],
+            "context": "",
+        }
 
+    contents = [
+        item["content"]
+        for item in (results or [])
+        if isinstance(item, dict) and item.get("content")
+    ]
+    logger.info("Web search returned %d results", len(contents))
+    return {"context": "\n\n".join(contents)}
+
+
+# --------------------------------------------------------------------------
+# Graph wiring
+# --------------------------------------------------------------------------
+def build_graph():
+    """
+    Build and compile the adaptive RAG graph.
+
+    Returns:
+        The compiled LangGraph application.
+    """
+    graph = StateGraph(State)
+
+    graph.add_node("query_analysis", query_classifier)
+    graph.add_node("retriever", retriever_node)
+    graph.add_node("grade", grade)
+    graph.add_node("generate", generate)
+    graph.add_node("rewrite", rewrite_query)
+    graph.add_node("web_search", web_search)
+    graph.add_node("general_llm", general_llm)
+
+    graph.add_edge(START, "query_analysis")
+    graph.add_conditional_edges(
+        "query_analysis",
+        routing_tool,
+        {
+            "retriever": "retriever",
+            "general_llm": "general_llm",
+            "web_search": "web_search",
+        },
+    )
+    graph.add_edge("retriever", "grade")
+    graph.add_conditional_edges(
+        "grade", doc_tool, {"rewrite": "rewrite", "generate": "generate"}
+    )
+    graph.add_edge("rewrite", "retriever")
+    graph.add_edge("web_search", "generate")
+    # Verification can send the answer back for one bounded regeneration.
+    graph.add_conditional_edges(
+        "generate", verify_answer, {"__end__": END, "generate": "generate"}
+    )
+    graph.add_edge("general_llm", END)
+
+    return graph.compile()
+
+
+builder = build_graph()
+
+
+async def run_query(user_id: str, messages: list) -> str:
+    """
+    Run one turn of the graph and return the answer text.
+
+    Args:
+        user_id: The requesting user; scopes retrieval to their documents.
+        messages: Conversation history, oldest first.
+
+    Returns:
+        The assistant's answer.
+
+    Raises:
+        RetrievalError: If the graph fails or produces no answer.
+    """
+    from langgraph.errors import GraphRecursionError
+    from openai import OpenAIError
+
+    from src.core.exceptions import RetrievalError
+
+    try:
+        result = await builder.ainvoke(
+            {"messages": messages, "user_id": user_id},
+            config={"recursion_limit": 25},
+        )
+    except GraphRecursionError as exc:
+        logger.error("Graph hit its recursion limit: %s", exc)
+        raise RetrievalError(
+            "The assistant could not converge on an answer. Please rephrase "
+            "your question."
+        ) from exc
+    except OpenAIError as exc:
+        # An upstream provider failure is a 502, not an internal 500.
+        logger.error("Model provider call failed: %s", exc)
+        raise RetrievalError(
+            "The language model service is unavailable. Please try again."
+        ) from exc
+
+    output: Optional[str] = None
+    if result.get("messages"):
+        output = str(result["messages"][-1].content)
+
+    if not output:
+        raise RetrievalError("The assistant produced an empty answer.")
+    return output
