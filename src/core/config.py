@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     MONGODB_URL: Optional[str] = None
     MONGODB_DB_NAME: str = "adaptive_rag"
 
+    # --- Vector store -----------------------------------------------------
+    # When QDRANT_URL is set the vector store is persistent and shared across
+    # processes. Otherwise an in-process FAISS index is used, which is lost on
+    # restart and confines the service to a single worker.
+    QDRANT_URL: Optional[str] = None
+    QDRANT_API_KEY: Optional[str] = None
+    QDRANT_COLLECTION: str = "adaptive_rag_documents"
+
     # --- Models -----------------------------------------------------------
     OPENAI_MODEL: str = "gpt-4o"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
@@ -97,9 +105,9 @@ class Settings(BaseSettings):
             )
         return candidate
 
-    @field_validator("MONGODB_URL")
+    @field_validator("MONGODB_URL", "QDRANT_URL", "QDRANT_API_KEY")
     @classmethod
-    def _normalise_mongo_url(cls, value: Optional[str]) -> Optional[str]:
+    def _blank_means_unset(cls, value: Optional[str]) -> Optional[str]:
         # An empty string in .env means "not configured", not "connect to ''".
         return value.strip() or None if value else None
 
@@ -112,6 +120,16 @@ class Settings(BaseSettings):
     def persistence_enabled(self) -> bool:
         """True when MongoDB is configured for durable storage."""
         return self.MONGODB_URL is not None
+
+    @property
+    def qdrant_enabled(self) -> bool:
+        """True when a persistent, shared vector store is configured."""
+        return self.QDRANT_URL is not None
+
+    @property
+    def vector_backend(self) -> str:
+        """Name of the active vector store backend."""
+        return "qdrant" if self.qdrant_enabled else "faiss"
 
 
 @lru_cache(maxsize=1)
