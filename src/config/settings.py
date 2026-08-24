@@ -36,5 +36,15 @@ class Config:
 
         Returns:
             The prompt template string.
+
+        Raises:
+            KeyError: If the prompt is not defined, naming the missing key.
         """
-        return self.config["prompts"][key]
+        try:
+            return self.config["prompts"][key]
+        except KeyError as exc:
+            available = sorted(self.config.get("prompts", {}))
+            raise KeyError(
+                f"Prompt '{key}' is not defined in prompts.yaml. "
+                f"Available prompts: {available}"
+            ) from exc
