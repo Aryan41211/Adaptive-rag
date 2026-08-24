@@ -13,6 +13,8 @@ os.environ["OPENAI_API_KEY"] = "sk-test-key-not-real"
 os.environ["JWT_SECRET_KEY"] = "test-secret-key-long-enough-for-validation-0123456789"
 os.environ["TAVILY_API_KEY"] = ""
 os.environ["MONGODB_URL"] = ""
+os.environ["QDRANT_URL"] = ""
+os.environ["QDRANT_API_KEY"] = ""
 os.environ["LOG_LEVEL"] = "WARNING"
 
 import pytest  # noqa: E402
@@ -23,28 +25,76 @@ from src.db import users  # noqa: E402
 from src.main import app  # noqa: E402
 from src.memory import chat_history_mongo  # noqa: E402
 from src.rag import reAct_agent, vector_store  # noqa: E402
+from src.rag.backends import faiss_backend, qdrant_backend  # noqa: E402
 
 
-@pytest.fixture(autouse=True)
-def _clean_state():
-    """Reset all process-local stores between tests."""
-    users.reset_memory_store()
-    chat_history_mongo.reset_memory_store()
-    vector_store.reset()
-    reAct_agent.reset_cache()
-    yield
-    users.reset_memory_store()
-    chat_history_mongo.reset_memory_store()
-    vector_store.reset()
-    reAct_agent.reset_cache()
+# Small enough to keep tests fast; the value only has to be consistent.
+FAKE_EMBEDDING_SIZE = 64
 
 
 @pytest.fixture(autouse=True)
 def fake_embeddings(monkeypatch):
-    """Replace OpenAI embeddings with a deterministic local fake."""
-    fake = DeterministicFakeEmbedding(size=64)
-    monkeypatch.setattr(vector_store, "get_embeddings", lambda: fake)
+    """
+    Replace OpenAI embeddings with a deterministic local fake.
+
+    Each backend imports the factory by name, so both bindings are patched.
+    """
+    fake = DeterministicFakeEmbedding(size=FAKE_EMBEDDING_SIZE)
+    for module in (faiss_backend, qdrant_backend):
+        monkeypatch.setattr(module, "get_embeddings", lambda: fake)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def _clean_state(fake_embeddings):
+    """Reset all process-local stores between tests."""
+
+    def _reset():
+        users.reset_memory_store()
+        chat_history_mongo.reset_memory_store()
+        reAct_agent.reset_cache()
+        # Drop the backend instance rather than clearing it: the next test
+        # rebuilds from whatever settings it establishes.
+        vector_store.set_backend(None)
+
+    _reset()
+    yield
+    _reset()
+
+
+@pytest.fixture
+def qdrant_backend_instance():
+    """A real Qdrant backend running fully in process."""
+    from qdrant_client import QdrantClient
+
+    client = QdrantClient(location=":memory:")
+    backend = qdrant_backend.QdrantBackend(
+        client=client, collection_name="test_documents"
+    )
+    vector_store.set_backend(backend)
+    yield backend
+    vector_store.set_backend(None)
+
+
+@pytest.fixture
+def faiss_backend_instance():
+    """An in-memory FAISS backend."""
+    backend = faiss_backend.FaissBackend()
+    vector_store.set_backend(backend)
+    yield backend
+    vector_store.set_backend(None)
+
+
+@pytest.fixture(params=["faiss", "qdrant"])
+def any_backend(request):
+    """
+    Run a test against every backend.
+
+    The isolation guarantees must hold identically whichever store is active.
+    """
+    backend = request.getfixturevalue(f"{request.param}_backend_instance")
+    backend.test_name = request.param
+    return backend
 
 
 @pytest.fixture

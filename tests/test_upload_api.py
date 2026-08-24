@@ -100,20 +100,26 @@ def test_uploaded_content_is_searchable_by_its_owner_only(client):
     _post(client, alice, data=b"the treasure is buried under the oak tree")
     _post(client, bob, name="bob.txt", data=b"bob writes about spreadsheets")
 
-    indexes = {
-        user_id: index
-        for user_id, index in _all_indexes().items()
-    }
-    assert len(indexes) == 2
+    # Each user's retriever sees only their own document.
+    contents = {}
+    for user in _user_ids():
+        hits = vector_store.get_retriever(user).invoke("treasure")
+        contents[user] = [hit.page_content for hit in hits]
 
-    contents = [
-        doc.page_content
-        for index in indexes.values()
-        for doc in index.vectorstore.similarity_search("treasure", k=5)
+    assert len(contents) == 2
+    treasure_owners = [
+        user
+        for user, texts in contents.items()
+        if any("treasure" in text for text in texts)
     ]
-    # The treasure text exists exactly once, in a single user's index.
-    assert sum("treasure" in text for text in contents) == 1
+    assert len(treasure_owners) == 1
 
 
-def _all_indexes():
-    return dict(vector_store._indexes)
+def _user_ids():
+    """Resolve the registered users' ids."""
+    from src.db import users as user_store
+
+    return [
+        document["user_id"]
+        for document in user_store._memory_users.values()
+    ]
