@@ -9,6 +9,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, status
+from fastapi.concurrency import run_in_threadpool
 
 from src.api.deps import CurrentUser, get_current_user
 from src.api.ratelimit import auth_rate_limit
@@ -21,11 +22,13 @@ from src.core.security import (
     verify_password,
 )
 from src.db import revoked_tokens, users
+from src.memory import chat_history_mongo
 from src.models.query_request import (
     LoginRequest,
     RegisterRequest,
     TokenResponse,
 )
+from src.rag import reAct_agent, vector_store
 
 logger = get_logger(__name__)
 
@@ -122,3 +125,29 @@ async def logout(user: CurrentUser = Depends(get_current_user)) -> None:
             datetime.fromtimestamp(user.expires_at, tz=timezone.utc),
         )
         logger.info("Revoked session for '%s'", user.username)
+
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_account(user: CurrentUser = Depends(get_current_user)) -> None:
+    """
+    Delete the caller's account and everything associated with it.
+
+    Removes the indexed documents, the conversation history and the account
+    record, then revokes the token used to make the request. Without this a
+    user has no way to withdraw personal data they have uploaded.
+
+    Args:
+        user: The authenticated caller.
+    """
+    await run_in_threadpool(vector_store.reset, user.user_id)
+    reAct_agent.reset_cache(user.user_id)
+
+    messages = await chat_history_mongo.delete_all_for_user(user.user_id)
+    await users.delete_user(user.user_id)
+
+    if user.jti:
+        await revoked_tokens.revoke(
+            user.jti, datetime.fromtimestamp(user.expires_at, tz=timezone.utc)
+        )
+
+    logger.info("Deleted account '%s' and %d stored messages", user.username, messages)

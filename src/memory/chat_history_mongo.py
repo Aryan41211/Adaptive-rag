@@ -128,6 +128,27 @@ class ChatMessageHistory:
         await db[COLLECTION_NAME].delete_many(self._filter)
 
 
+async def delete_all_for_user(user_id: str) -> int:
+    """
+    Delete every conversation belonging to a user.
+
+    Args:
+        user_id: The owning user.
+
+    Returns:
+        The number of messages removed.
+    """
+    db = get_database()
+    if db is None:
+        removed = 0
+        for key in [k for k in _memory_history if k[0] == user_id]:
+            removed += len(_memory_history.pop(key, []))
+        return removed
+
+    result = await db[COLLECTION_NAME].delete_many({"user_id": user_id})
+    return result.deleted_count
+
+
 class ChatHistory:
     """Factory for owner-scoped chat histories."""
 

@@ -92,3 +92,25 @@ async def create_user(username: str, password_hash: str) -> dict[str, Any]:
 def reset_memory_store() -> None:
     """Clear the in-memory user store. Intended for tests."""
     _memory_users.clear()
+
+
+async def delete_user(user_id: str) -> bool:
+    """
+    Remove a user record.
+
+    Args:
+        user_id: The user to delete.
+
+    Returns:
+        True if a record was removed.
+    """
+    db = get_database()
+    if db is None:
+        for key, document in list(_memory_users.items()):
+            if document["user_id"] == user_id:
+                _memory_users.pop(key, None)
+                return True
+        return False
+
+    result = await db["users"].delete_one({"user_id": user_id})
+    return result.deleted_count > 0
