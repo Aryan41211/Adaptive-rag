@@ -1,56 +1,132 @@
 """
-Per-user vector store registry.
+Per-user document storage.
 
-Each user owns an isolated FAISS index and an accompanying description of the
-documents it holds. Previously a single process-global index and a shared
-``description.txt`` on disk were used, which meant one user's upload replaced
-every other user's documents and every user could retrieve every other user's
-content.
+Dispatches to whichever backend is configured. Callers keep the same
+module-level API regardless of which one is active:
 
-Each index carries a monotonically increasing ``version``. Downstream caches
-(the retriever tool and the ReAct agent) key on that version, so an upload
-invalidates them and newly indexed documents become searchable immediately.
+* **Qdrant** when ``QDRANT_URL`` is set - durable, shared across processes,
+  so the service can run more than one worker.
+* **FAISS** otherwise - in-process, lost on restart, single worker only.
+
+Both isolate documents by owner: a user can never retrieve another user's
+content, and one user's upload never displaces another's.
 """
 
 import threading
-from dataclasses import dataclass, field
 from typing import Optional
 
 from langchain_core.documents import Document
 from langchain_core.tools import create_retriever_tool
 from langchain_core.vectorstores import VectorStoreRetriever
-from langchain_community.vectorstores import FAISS
 
 from src.core.config import settings
 from src.core.logger import get_logger
-from src.llms.openai import get_embeddings
+from src.rag.backends.base import DEFAULT_DESCRIPTION, VectorStoreBackend
 
 logger = get_logger(__name__)
 
-DEFAULT_DESCRIPTION = "documents the user has uploaded"
-
-# Guards the registry: FastAPI runs sync handlers in a thread pool, so two
-# uploads can land concurrently.
 _lock = threading.RLock()
+_backend: Optional[VectorStoreBackend] = None
 
 
-@dataclass
-class UserIndex:
-    """One user's document index and its metadata."""
+def get_backend() -> VectorStoreBackend:
+    """
+    Return the active backend, constructing it on first use.
 
-    vectorstore: FAISS
-    descriptions: list[str] = field(default_factory=list)
-    chunk_count: int = 0
-    version: int = 1
+    Returns:
+        The configured :class:`VectorStoreBackend`.
+    """
+    global _backend
+    with _lock:
+        if _backend is None:
+            if settings.qdrant_enabled:
+                from src.rag.backends.qdrant_backend import QdrantBackend
 
-    @property
-    def description(self) -> str:
-        """Combined natural-language description of the indexed documents."""
-        parts = [d.strip() for d in self.descriptions if d and d.strip()]
-        return "; ".join(parts) if parts else DEFAULT_DESCRIPTION
+                _backend = QdrantBackend()
+                logger.info("Vector store backend: qdrant")
+            else:
+                from src.rag.backends.faiss_backend import FaissBackend
+
+                _backend = FaissBackend()
+                logger.info(
+                    "Vector store backend: faiss (in-memory; documents are "
+                    "lost on restart and the service must run one worker)"
+                )
+        return _backend
 
 
-_indexes: dict[str, UserIndex] = {}
+def set_backend(backend: Optional[VectorStoreBackend]) -> None:
+    """
+    Replace the active backend. Intended for tests.
+
+    Args:
+        backend: The backend to use, or None to rebuild from settings.
+    """
+    global _backend
+    with _lock:
+        _backend = backend
+
+
+def add_documents(user_id: str, chunks: list[Document], description: str) -> int:
+    """
+    Index document chunks for one user.
+
+    Chunks accumulate: uploading a second document keeps the first
+    searchable.
+
+    Args:
+        user_id: The owning user.
+        chunks: Chunked documents to index.
+        description: Description of the source document.
+
+    Returns:
+        The user's new total chunk count.
+
+    Raises:
+        ValueError: If ``chunks`` is empty.
+    """
+    return get_backend().add_documents(user_id, chunks, description)
+
+
+def get_retriever(user_id: str) -> Optional[VectorStoreRetriever]:
+    """
+    Return a retriever restricted to one user's documents.
+
+    Args:
+        user_id: The owning user.
+
+    Returns:
+        A retriever, or None when the user has uploaded nothing.
+    """
+    return get_backend().get_retriever(user_id)
+
+
+def get_description(user_id: str) -> str:
+    """
+    Return the combined description of a user's documents.
+
+    Args:
+        user_id: The owning user.
+
+    Returns:
+        The description, or a neutral default.
+    """
+    return get_backend().get_description(user_id)
+
+
+def get_version(user_id: str) -> int:
+    """
+    Return a value that changes whenever the user's documents change.
+
+    Used to invalidate the cached ReAct agent.
+
+    Args:
+        user_id: The owning user.
+
+    Returns:
+        The current version, or 0 when nothing is indexed.
+    """
+    return get_backend().get_version(user_id)
 
 
 def has_documents(user_id: str) -> bool:
@@ -61,132 +137,16 @@ def has_documents(user_id: str) -> bool:
         user_id: The owning user.
 
     Returns:
-        True if at least one document chunk is indexed.
+        True if at least one chunk is indexed.
     """
-    with _lock:
-        index = _indexes.get(user_id)
-        return index is not None and index.chunk_count > 0
-
-
-def get_index(user_id: str) -> Optional[UserIndex]:
-    """
-    Return a user's index, if one exists.
-
-    Args:
-        user_id: The owning user.
-
-    Returns:
-        The :class:`UserIndex`, or None when nothing has been uploaded.
-    """
-    with _lock:
-        return _indexes.get(user_id)
-
-
-def get_description(user_id: str) -> str:
-    """
-    Return the description of a user's indexed documents.
-
-    Args:
-        user_id: The owning user.
-
-    Returns:
-        The combined description, or a neutral default.
-    """
-    index = get_index(user_id)
-    return index.description if index else DEFAULT_DESCRIPTION
-
-
-def get_version(user_id: str) -> int:
-    """
-    Return the current index version for cache invalidation.
-
-    Args:
-        user_id: The owning user.
-
-    Returns:
-        The version number, or 0 when no index exists.
-    """
-    index = get_index(user_id)
-    return index.version if index else 0
-
-
-def add_documents(
-    user_id: str, chunks: list[Document], description: str
-) -> int:
-    """
-    Add document chunks to a user's index, creating it if necessary.
-
-    Chunks accumulate: uploading a second document keeps the first one
-    searchable.
-
-    Args:
-        user_id: The owning user.
-        chunks: Chunked documents to index.
-        description: Natural-language description of the source document.
-
-    Returns:
-        The new total number of indexed chunks for this user.
-
-    Raises:
-        ValueError: If ``chunks`` is empty.
-    """
-    if not chunks:
-        raise ValueError("No content could be extracted from the document.")
-
-    embeddings = get_embeddings()
-
-    with _lock:
-        index = _indexes.get(user_id)
-        if index is None:
-            index = UserIndex(
-                vectorstore=FAISS.from_documents(
-                    documents=chunks, embedding=embeddings
-                ),
-                descriptions=[description],
-                chunk_count=len(chunks),
-                version=1,
-            )
-            _indexes[user_id] = index
-        else:
-            index.vectorstore.add_documents(chunks)
-            if description and description not in index.descriptions:
-                index.descriptions.append(description)
-            index.chunk_count += len(chunks)
-            index.version += 1
-
-        logger.info(
-            "Indexed %d chunks for user (total=%d, version=%d)",
-            len(chunks),
-            index.chunk_count,
-            index.version,
-        )
-        return index.chunk_count
-
-
-def get_retriever(user_id: str) -> Optional[VectorStoreRetriever]:
-    """
-    Return a retriever over a user's documents.
-
-    Args:
-        user_id: The owning user.
-
-    Returns:
-        A retriever, or None when the user has uploaded nothing.
-    """
-    index = get_index(user_id)
-    if index is None or index.chunk_count == 0:
-        return None
-    return index.vectorstore.as_retriever(
-        search_kwargs={"k": settings.RETRIEVER_TOP_K}
-    )
+    return get_backend().has_documents(user_id)
 
 
 def get_retriever_tool(user_id: str):
     """
-    Build a LangChain retriever tool bound to a user's current index.
+    Build a retriever tool bound to a user's documents as they are now.
 
-    The tool is built against the index as it exists *now*; callers must not
-    cache it across an index version change.
+    Callers must not cache the result across an index version change.
 
     Args:
         user_id: The owning user.
@@ -209,13 +169,50 @@ def get_retriever_tool(user_id: str):
 
 def reset(user_id: Optional[str] = None) -> None:
     """
-    Drop indexes.
+    Delete indexed documents.
 
     Args:
-        user_id: Drop only this user's index; drop all when None.
+        user_id: Drop only this user's documents; drop all when None.
     """
-    with _lock:
-        if user_id is None:
-            _indexes.clear()
-        else:
-            _indexes.pop(user_id, None)
+    get_backend().reset(user_id)
+
+
+def health() -> tuple[bool, str]:
+    """
+    Report backend reachability.
+
+    Returns:
+        A ``(healthy, detail)`` pair for the readiness probe.
+    """
+    return get_backend().health()
+
+
+def get_index(user_id: str):
+    """
+    Return the raw FAISS index for a user. FAISS backend only; tests only.
+
+    Args:
+        user_id: The owning user.
+
+    Returns:
+        The index, or None.
+    """
+    backend = get_backend()
+    getter = getattr(backend, "get_index", None)
+    return getter(user_id) if getter else None
+
+
+__all__ = [
+    "DEFAULT_DESCRIPTION",
+    "add_documents",
+    "get_backend",
+    "get_description",
+    "get_index",
+    "get_retriever",
+    "get_retriever_tool",
+    "get_version",
+    "has_documents",
+    "health",
+    "reset",
+    "set_backend",
+]
