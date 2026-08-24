@@ -1,13 +1,46 @@
 """
-OpenAI LLM initialization and configuration.
+OpenAI model factories.
+
+Credentials are passed explicitly from validated settings rather than relying
+on ambient environment variables, so a missing key is caught at startup by
+configuration validation instead of at request time by the provider.
 """
 
-import os
+from functools import lru_cache
 
-from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-load_dotenv()
-os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY", "")
+from src.core.config import settings
 
-llm = ChatOpenAI(model="gpt-4o")
+
+@lru_cache(maxsize=1)
+def get_llm() -> ChatOpenAI:
+    """
+    Return the shared chat model.
+
+    Returns:
+        A configured :class:`ChatOpenAI` instance.
+    """
+    return ChatOpenAI(
+        model=settings.OPENAI_MODEL,
+        api_key=settings.OPENAI_API_KEY,
+        temperature=0,
+        timeout=60,
+        max_retries=2,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_embeddings() -> OpenAIEmbeddings:
+    """
+    Return the shared embeddings model.
+
+    Returns:
+        A configured :class:`OpenAIEmbeddings` instance.
+    """
+    return OpenAIEmbeddings(
+        model=settings.OPENAI_EMBEDDING_MODEL,
+        api_key=settings.OPENAI_API_KEY,
+        timeout=60,
+        max_retries=2,
+    )
