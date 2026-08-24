@@ -16,6 +16,7 @@ st.set_page_config(
 
 from utils.api_client import (  # noqa: E402
     ApiError,
+    logout,
     query_backend,
     upload_document,
 )
@@ -57,6 +58,12 @@ if st.session_state.show_logout_confirm:
     confirm, cancel = st.columns(2)
     with confirm:
         if st.button("✅ Yes, sign out", use_container_width=True):
+            # Revoke server-side too: clearing session state alone would
+            # leave a copied token valid until it expired.
+            try:
+                logout(token)
+            except ApiError:
+                pass
             st.session_state.clear()
             st.switch_page(HOME_PAGE)
     with cancel:
@@ -84,7 +91,9 @@ with st.sidebar:
             file_key = f"{uploaded_file.name}:{uploaded_file.size}:{description}"
             if file_key in st.session_state.uploaded_files:
                 st.success(f"Already indexed: {uploaded_file.name}")
-            elif st.button("Upload and index", type="primary", use_container_width=True):
+            elif st.button(
+                "Upload and index", type="primary", use_container_width=True
+            ):
                 with st.spinner("Indexing document..."):
                     try:
                         result = upload_document(uploaded_file, description, token)
@@ -103,24 +112,43 @@ with st.sidebar:
         for result in st.session_state.uploaded_files.values():
             st.write(f"• {result['filename']} ({result['chunks_indexed']} chunks)")
 
+
 # --- Conversation ----------------------------------------------------------
-for role, text in st.session_state.chat_history:
-    st.chat_message(role).write(text)
+def render_citations(citations):
+    """Show the sources an answer was drawn from."""
+    if not citations:
+        return
+    with st.expander(f"📎 {len(citations)} source(s)"):
+        for citation in citations:
+            location = citation.get("source", "document")
+            if citation.get("page"):
+                location += f" (p. {citation['page']})"
+            st.markdown(f"**{location}**")
+            st.caption(citation.get("snippet", ""))
+
+
+for entry in st.session_state.chat_history:
+    role, text, citations = entry
+    with st.chat_message(role):
+        st.write(text)
+        render_citations(citations)
 
 user_input = st.chat_input("Ask a question...")
 
 if user_input:
-    st.session_state.chat_history.append(("user", user_input))
+    st.session_state.chat_history.append(("user", user_input, []))
     st.chat_message("user").write(user_input)
 
+    citations = []
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
-                answer = query_backend(
+                answer, citations = query_backend(
                     user_input, st.session_state["session_id"], token
                 )
             except ApiError as exc:
                 answer = f"⚠️ {exc}"
         st.write(answer)
+        render_citations(citations)
 
-    st.session_state.chat_history.append(("assistant", answer))
+    st.session_state.chat_history.append(("assistant", answer, citations))

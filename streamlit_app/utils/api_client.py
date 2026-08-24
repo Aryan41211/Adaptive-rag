@@ -11,7 +11,7 @@ leaves the UI hanging forever.
 
 import logging
 import os
-from typing import Any, Optional
+from typing import Any
 
 import requests
 
@@ -57,9 +57,9 @@ def _post(
     path: str,
     timeout: int,
     *,
-    json: Optional[dict] = None,
-    files: Optional[dict] = None,
-    headers: Optional[dict] = None,
+    json: dict | None = None,
+    files: dict | None = None,
+    headers: dict | None = None,
 ) -> dict[str, Any]:
     """
     POST to the API and return the decoded body.
@@ -93,6 +93,9 @@ def _post(
 
     if not response.ok:
         raise ApiError(_detail(response))
+
+    if response.status_code == 204 or not response.content:
+        return {}
 
     try:
         return response.json()
@@ -142,7 +145,20 @@ def login(username: str, password: str) -> dict[str, Any]:
     )
 
 
-def query_backend(query: str, session_id: str, token: str) -> str:
+def logout(token: str) -> None:
+    """
+    Revoke the caller's access token server-side.
+
+    Args:
+        token: The access token to revoke.
+
+    Raises:
+        ApiError: If the request fails.
+    """
+    _post("/auth/logout", AUTH_TIMEOUT, headers=_auth_header(token))
+
+
+def query_backend(query: str, session_id: str, token: str) -> tuple[str, list]:
     """
     Ask the RAG pipeline a question.
 
@@ -152,7 +168,7 @@ def query_backend(query: str, session_id: str, token: str) -> str:
         token: The caller's access token.
 
     Returns:
-        The assistant's answer.
+        The answer and the sources it was grounded in.
 
     Raises:
         ApiError: If the request fails.
@@ -163,7 +179,7 @@ def query_backend(query: str, session_id: str, token: str) -> str:
         json={"query": query, "session_id": session_id},
         headers=_auth_header(token),
     )
-    return body["answer"]
+    return body["answer"], body.get("citations") or []
 
 
 def upload_document(file, description: str, token: str) -> dict[str, Any]:
