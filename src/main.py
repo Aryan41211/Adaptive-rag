@@ -9,7 +9,7 @@ deployment fails during startup rather than on the first user request.
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,10 +18,12 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from src.api import ratelimit
 from src.api.auth_routes import router as auth_router
+from src.api.deps import CurrentUser, get_current_user
 from src.api.routes import router as rag_router
 from src.core.config import settings
 from src.core.exceptions import AdaptiveRagError
 from src.core.logger import configure_logging, get_logger, request_id_var
+from src.core.usage import TOTALS
 from src.db import mongo_client, revoked_tokens
 from src.rag import vector_store
 
@@ -167,7 +169,7 @@ app.include_router(auth_router)
 app.include_router(rag_router)
 
 
-@app.get("/", tags=["health"])
+@app.api_route("/", methods=["GET", "HEAD"], tags=["health"])
 async def root() -> dict:
     """Report basic service identity."""
     return {
@@ -177,13 +179,13 @@ async def root() -> dict:
     }
 
 
-@app.get("/healthz", tags=["health"])
+@app.api_route("/healthz", methods=["GET", "HEAD"], tags=["health"])
 async def healthz() -> dict:
     """Liveness probe: the process is up and serving."""
     return {"status": "ok"}
 
 
-@app.get("/readyz", tags=["health"])
+@app.api_route("/readyz", methods=["GET", "HEAD"], tags=["health"])
 async def readyz() -> JSONResponse:
     """
     Readiness probe reporting dependency status.
@@ -215,3 +217,25 @@ async def readyz() -> JSONResponse:
         ),
         content=body,
     )
+
+
+@app.get("/metrics", tags=["health"])
+async def metrics(user: CurrentUser = Depends(get_current_user)) -> dict:
+    """
+    Report this process's model usage since start-up.
+
+    Authenticated because token counts and spend are operational detail, not
+    something to expose publicly. Counters are per-process: with several
+    workers, scrape each one.
+
+    Args:
+        user: The authenticated caller.
+
+    Returns:
+        Cumulative request, token and estimated-cost totals.
+    """
+    return {
+        "version": settings.APP_VERSION,
+        "vector_backend": settings.vector_backend,
+        "usage": TOTALS.snapshot(),
+    }

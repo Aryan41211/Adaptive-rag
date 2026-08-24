@@ -426,7 +426,7 @@ def build_graph():
 builder = build_graph()
 
 
-async def run_query(user_id: str, messages: list) -> tuple[str, list[dict]]:
+async def run_query(user_id: str, messages: list) -> tuple[str, list[dict], dict]:
     """
     Run one turn of the graph and return the answer text.
 
@@ -435,8 +435,9 @@ async def run_query(user_id: str, messages: list) -> tuple[str, list[dict]]:
         messages: Conversation history, oldest first.
 
     Returns:
-        The assistant's answer and the sources it was grounded in. The source
-        list is empty for general-knowledge and web-search answers.
+        The assistant's answer, the sources it was grounded in, and the token
+        usage for the whole turn. The source list is empty for
+        general-knowledge and web-search answers.
 
     Raises:
         RetrievalError: If the graph fails or produces no answer.
@@ -445,19 +446,26 @@ async def run_query(user_id: str, messages: list) -> tuple[str, list[dict]]:
     from openai import OpenAIError
 
     from src.core.exceptions import RetrievalError
+    from src.core.usage import UsageTracker
+
+    # One tracker per turn: a turn makes several model calls and the cost of
+    # any single one says little about the cost of the request.
+    tracker = UsageTracker()
 
     try:
         result = await builder.ainvoke(
             {"messages": messages, "user_id": user_id},
-            config={"recursion_limit": 25},
+            config={"recursion_limit": 25, "callbacks": [tracker]},
         )
     except GraphRecursionError as exc:
+        tracker.finish()
         logger.error("Graph hit its recursion limit: %s", exc)
         raise RetrievalError(
             "The assistant could not converge on an answer. Please rephrase "
             "your question."
         ) from exc
     except OpenAIError as exc:
+        tracker.finish()
         # An upstream provider failure is a 502, not an internal 500.
         logger.error("Model provider call failed: %s", exc)
         raise RetrievalError(
@@ -468,6 +476,8 @@ async def run_query(user_id: str, messages: list) -> tuple[str, list[dict]]:
     if result.get("messages"):
         output = str(result["messages"][-1].content)
 
+    usage = tracker.finish()
+
     if not output:
         raise RetrievalError("The assistant produced an empty answer.")
-    return output, list(result.get("citations") or [])
+    return output, list(result.get("citations") or []), usage.as_dict()
