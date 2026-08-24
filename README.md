@@ -141,7 +141,11 @@ Adaptive-Rag/
 │   │   └── verification_result.py    # Answer faithfulness
 │   ├── rag/
 │   │   ├── graph_builder.py          # LangGraph nodes and wiring
-│   │   ├── vector_store.py           # Per-user FAISS indexes, versioned
+│   │   ├── vector_store.py           # Backend-agnostic per-user document API
+│   │   ├── backends/
+│   │   │   ├── base.py               # Backend interface
+│   │   │   ├── qdrant_backend.py     # Persistent, shared, multi-worker
+│   │   │   └── faiss_backend.py      # In-process development fallback
 │   │   ├── document_upload.py        # Validation, parsing, chunking, indexing
 │   │   └── reAct_agent.py            # Per-user agent, cache keyed on index version
 │   └── tools/
@@ -153,7 +157,7 @@ Adaptive-Rag/
 │   ├── pages/chat.py                 # Chat and document upload
 │   └── utils/api_client.py           # Typed API client with timeouts
 │
-├── tests/                            # 160 tests (pytest)
+├── tests/                            # 233 tests (pytest)
 │   ├── conftest.py                   # Fixtures, fakes, state reset
 │   ├── test_config.py                # Settings validation
 │   ├── test_security.py              # Hashing and JWT
@@ -161,7 +165,8 @@ Adaptive-Rag/
 │   ├── test_api_query.py             # Query endpoint, validation, errors
 │   ├── test_upload.py                # Upload validation and indexing
 │   ├── test_upload_api.py            # Upload endpoint end to end
-│   ├── test_vector_store.py          # Per-user isolation, cache invalidation
+│   ├── test_vector_store.py          # Per-user isolation, run against both backends
+│   ├── test_qdrant_backend.py        # Durability and cross-worker visibility
 │   ├── test_chat_history.py          # Ownership scoping and trimming
 │   ├── test_graph_tools.py           # Routing and loop bounds
 │   ├── test_graph_nodes.py           # Node behaviour and degradation
@@ -337,11 +342,19 @@ supplied), which also appears in the matching log lines.
 |---|---|---|
 | Python 3.10+ | **Required** | Developed and tested on 3.12 |
 | OpenAI API key | **Required** | Chat completions and embeddings |
+| Qdrant | Recommended | Persistent, shared document storage. Without it an in-process FAISS index is used: documents are lost on restart and the API must run a single worker |
+| MongoDB | Recommended | Durable users and chat history. Without it both are kept in memory, lost on restart, and not shared between workers |
 | Tavily API key | Optional | Enables the web-search route; without it those queries fall back to general knowledge |
-| MongoDB | Optional | Durable users and chat history; without it both are kept in memory and lost on restart |
 
-> Qdrant is **not** required. The active vector store is in-process FAISS.
-> See [Known limitations](#-known-limitations).
+Start the optional services locally with:
+
+```bash
+docker run -d -p 6333:6333 --name qdrant qdrant/qdrant
+docker run -d -p 27017:27017 --name mongo mongo:7
+```
+
+Then set `QDRANT_URL=http://localhost:6333` and
+`MONGODB_URL=mongodb://localhost:27017` in `.env`.
 
 ### 2. Installation
 
@@ -457,6 +470,9 @@ All settings are environment variables, validated by `src/core/config.py`.
 
 | Variable | Default | Description |
 |---|---|---|
+| `QDRANT_URL` | *(empty)* | Persistent, shared vector store. In-process FAISS fallback when unset |
+| `QDRANT_API_KEY` | *(empty)* | Required by Qdrant Cloud, not by a local container |
+| `QDRANT_COLLECTION` | `adaptive_rag_documents` | Collection name; created automatically |
 | `TAVILY_API_KEY` | *(empty)* | Enables the web-search route |
 | `MONGODB_URL` | *(empty)* | Durable storage; in-memory fallback when unset |
 | `MONGODB_DB_NAME` | `adaptive_rag` | Database name |
@@ -578,21 +594,33 @@ pytest                 # full suite
 pytest --cov=src       # with coverage
 ```
 
-### ⚠️ Single-worker constraint
+### Workers
 
-**Run exactly one worker process.**
+How many workers you can run depends on where state lives.
+
+**With Qdrant and MongoDB configured — multiple workers:**
+
+```bash
+uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+Documents live in Qdrant and users and conversations live in MongoDB, so any
+worker can serve any request. The agent cache is invalidated by a value read
+back from Qdrant rather than remembered in process, so a worker that did not
+handle an upload still picks up the new documents.
+
+**Without them — one worker only:**
 
 ```bash
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 1
 ```
 
-The FAISS index lives in the process's memory. With multiple workers a
-user's upload lands in one process while their next query is served by
-another, which answers *"no documents uploaded"*. The same applies to the
-in-memory user and chat-history fallbacks when `MONGODB_URL` is unset.
+The FAISS index and the in-memory user and history stores are private to each
+process. With a second worker an upload lands in one process while the next
+query is served by another, which answers *"no documents uploaded"*, and a
+user registered on one worker cannot log in on another.
 
-Scaling horizontally requires an external vector store (the Qdrant code path
-is present but disabled) — tracked under [Known limitations](#-known-limitations).
+`GET /readyz` reports which backends are active.
 
 ### Health probes
 
@@ -611,12 +639,13 @@ No `Dockerfile` or `docker-compose.yml` is included yet.
 
 | Limitation | Impact | Status |
 |---|---|---|
-| FAISS index is in-memory | Uploaded documents are lost on restart | Qdrant path present but disabled |
-| Single worker only | No horizontal scaling | Blocked by the above |
 | No rate limiting | LLM spend is unbounded per user | Not implemented |
 | No CORS/TLS config | Must sit behind a reverse proxy | Deployment concern |
-| No token revocation | Logout is client-side only | Not implemented |
-| Docs describe Qdrant | `QDRANT_SETUP_GUIDE.md` documents a path the code does not currently take | Historical |
+| No token revocation | Logout is client-side only; tokens are valid until expiry | Not implemented |
+| No container image or CI | Deployment is manual | Not implemented |
+| FAISS fallback is not durable | Applies only when `QDRANT_URL` is unset | By design; use Qdrant |
+| In-memory user/history fallback | Applies only when `MONGODB_URL` is unset | By design; use MongoDB |
+| Answers do not cite sources | Chunk provenance is stored but not surfaced | Planned |
 
 ---
 
@@ -659,7 +688,7 @@ Contributions are welcome! Please follow these steps:
 | **Web Framework** | FastAPI | Latest |
 | **ASGI Server** | Uvicorn | Latest |
 | **UI Framework** | Streamlit | Latest |
-| **Vector Database** | Qdrant/FAISS | Latest |
+| **Vector Database** | Qdrant (FAISS fallback) | 1.19 / 1.15 |
 | **Chat Database** | MongoDB/InMemory | Latest |
 | **Document Processing** | LangChain Community | ~0.3.27 |
 | **LLM Provider** | OpenAI | ~0.3.28 |
@@ -741,26 +770,29 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - ✅ Adaptive RAG pipeline (route → retrieve → grade → rewrite → generate → verify)
 - ✅ Per-user document upload, indexing and retrieval
+- ✅ **Persistent vector storage in Qdrant**, with an in-process FAISS fallback
+- ✅ **Horizontal scaling** — multiple workers when Qdrant and MongoDB are configured
 - ✅ JWT authentication with bcrypt password hashing
-- ✅ Per-user isolation of documents and conversation history
+- ✅ Per-user isolation of documents and conversation history, enforced at the
+  storage layer and verified against both vector backends
 - ✅ Bounded retry loops (no unbounded model spend)
 - ✅ Input validation and upload hardening
 - ✅ Structured logging with request correlation ids
-- ✅ Health and readiness probes
+- ✅ Health and readiness probes reporting backend status
 - ✅ Streamlit UI wired to the API
-- ✅ Automated test suite (160 tests)
+- ✅ Automated test suite (233 tests, 95% coverage of `src/`)
 
 ### Not yet production-hardened
 
-- ❌ No persistence for the vector index (in-memory FAISS; lost on restart)
-- ❌ Single-worker only (see [Deployment](#-deployment))
 - ❌ No rate limiting or per-user spend caps
 - ❌ No TLS/CORS configuration, no container image, no CI pipeline
 - ❌ No token revocation
+- ❌ Answers do not cite their source chunks
 
-**Suitable for:** local use, demos, internal single-instance deployment behind
-a trusted proxy.
-**Not yet suitable for:** untrusted public traffic or multi-replica deployment.
+**Suitable for:** internal and small-scale production deployment behind a
+reverse proxy, with Qdrant and MongoDB configured.
+**Not yet suitable for:** untrusted public traffic without a rate limiter in
+front of it.
 
 ---
 
