@@ -35,7 +35,12 @@
 	}
 
 	handle /rag/* {
-		reverse_proxy api:8000
+		# flush_interval -1 disables response buffering, without which
+		# Server-Sent Events arrive in one lump at the end and streaming
+		# is defeated by the proxy.
+		reverse_proxy api:8000 {
+			flush_interval -1
+		}
 	}
 
 	handle /metrics {
