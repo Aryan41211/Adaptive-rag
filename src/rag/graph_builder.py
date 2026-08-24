@@ -16,6 +16,7 @@ that user's private index.
 
 import functools
 import os
+from collections.abc import AsyncIterator
 
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import PromptTemplate
@@ -25,7 +26,7 @@ from langgraph.graph.state import StateGraph
 from src.config.settings import Config
 from src.core.config import settings
 from src.core.logger import get_logger
-from src.llms.openai import get_llm
+from src.llms.openai import get_answer_llm, get_llm
 from src.models.grade import Grade
 from src.models.route_identifier import RouteIdentifier
 from src.models.state import State
@@ -182,7 +183,7 @@ def general_llm(state: State) -> dict:
     Returns:
         State update containing the answer message.
     """
-    result = get_llm().invoke(state["messages"])
+    result = get_answer_llm().invoke(state["messages"])
     return {"messages": [result]}
 
 
@@ -330,7 +331,7 @@ def generate(state: State) -> dict:
         template=config.prompt("generate_prompt"),
         input_variables=["context"],
     )
-    chain = generate_prompt | get_llm()
+    chain = generate_prompt | get_answer_llm()
 
     try:
         answer = str(chain.invoke({"context": context}).content)
@@ -481,3 +482,114 @@ async def run_query(user_id: str, messages: list) -> tuple[str, list[dict], dict
     if not output:
         raise RetrievalError("The assistant produced an empty answer.")
     return output, list(result.get("citations") or []), usage.as_dict()
+
+
+# Nodes that produce the user-facing answer. Only their tokens are streamed;
+# the classifier and grader also call models, but their output is structured
+# routing data the user must never see.
+ANSWER_NODES = {"generate", "general_llm"}
+
+
+async def stream_query(user_id: str, messages: list) -> AsyncIterator[dict]:
+    """
+    Run one turn, yielding the answer as it is produced.
+
+    Events are dictionaries with a ``type``:
+
+    * ``token``    - a fragment of the answer
+    * ``restart``  - discard the answer so far and start again, emitted when
+                     verification rejects an answer and it is regenerated
+    * ``citations``- the sources the answer was grounded in
+    * ``usage``    - token counts and estimated cost for the turn
+    * ``error``    - the turn failed; a message is included
+    * ``done``     - the turn is complete, with the full answer text
+
+    Args:
+        user_id: The requesting user; scopes retrieval to their documents.
+        messages: Conversation history, oldest first.
+
+    Yields:
+        Event dictionaries in the order above.
+    """
+    from langgraph.errors import GraphRecursionError
+    from openai import OpenAIError
+
+    from src.core.usage import UsageTracker
+
+    tracker = UsageTracker()
+    parts: list[str] = []
+    final_state: dict = {}
+    generate_starts = 0
+
+    try:
+        async for event in builder.astream_events(
+            {"messages": messages, "user_id": user_id},
+            version="v2",
+            config={"recursion_limit": 25, "callbacks": [tracker]},
+        ):
+            kind = event.get("event")
+            node = (event.get("metadata") or {}).get("langgraph_node")
+
+            if kind == "on_chain_start" and event.get("name") == "generate":
+                generate_starts += 1
+                # A second entry into generate means verification rejected the
+                # first answer. Anything already sent is now wrong.
+                if generate_starts > 1 and parts:
+                    parts.clear()
+                    yield {"type": "restart"}
+
+            elif kind == "on_chat_model_stream" and node in ANSWER_NODES:
+                chunk = event.get("data", {}).get("chunk")
+                text = str(getattr(chunk, "content", "") or "")
+                if text:
+                    parts.append(text)
+                    yield {"type": "token", "text": text}
+
+            elif kind == "on_chain_end" and not event.get("parent_ids"):
+                output = event.get("data", {}).get("output")
+                if isinstance(output, dict):
+                    final_state = output
+
+    except GraphRecursionError as exc:
+        tracker.finish()
+        logger.error("Graph hit its recursion limit: %s", exc)
+        yield {
+            "type": "error",
+            "message": "The assistant could not converge on an answer. "
+            "Please rephrase your question.",
+        }
+        return
+    except OpenAIError as exc:
+        tracker.finish()
+        logger.error("Model provider call failed: %s", exc)
+        yield {
+            "type": "error",
+            "message": "The language model service is unavailable. Please try again.",
+        }
+        return
+    except Exception as exc:  # noqa: BLE001 - the client is mid-stream
+        tracker.finish()
+        logger.exception("Streaming turn failed: %s", exc)
+        yield {"type": "error", "message": "The assistant failed to answer."}
+        return
+
+    answer = "".join(parts).strip()
+
+    # Some paths produce an answer without a model call - the "no documents"
+    # message, for instance - so nothing streamed. Send it in one piece.
+    if not answer and final_state.get("messages"):
+        answer = str(final_state["messages"][-1].content)
+        if answer:
+            yield {"type": "token", "text": answer}
+
+    if not answer:
+        yield {"type": "error", "message": "The assistant produced an empty answer."}
+        return
+
+    citations = list(final_state.get("citations") or [])
+    if citations:
+        yield {"type": "citations", "citations": citations}
+
+    usage = tracker.finish().as_dict()
+    yield {"type": "usage", "usage": usage}
+    yield {"type": "done", "answer": answer, "citations": citations, "usage": usage}
