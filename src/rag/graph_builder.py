@@ -24,6 +24,7 @@ from langgraph.constants import END, START
 from langgraph.graph.state import StateGraph
 
 from src.config.settings import Config
+from src.core import tracing
 from src.core.config import settings
 from src.core.logger import get_logger
 from src.llms.openai import get_answer_llm, get_llm
@@ -478,10 +479,22 @@ async def run_query(user_id: str, messages: list) -> tuple[str, list[dict], dict
         output = str(result["messages"][-1].content)
 
     usage = tracker.finish()
+    citations = list(result.get("citations") or [])
+
+    tracing.annotate_current_span(
+        **{
+            "rag.route": result.get("route"),
+            "rag.citations": len(citations),
+            "rag.model_calls": usage.calls,
+            "rag.total_tokens": usage.total_tokens,
+            "rag.cost_usd": usage.cost_usd,
+            "rag.streamed": False,
+        }
+    )
 
     if not output:
         raise RetrievalError("The assistant produced an empty answer.")
-    return output, list(result.get("citations") or []), usage.as_dict()
+    return output, citations, usage.as_dict()
 
 
 # Nodes that produce the user-facing answer. Only their tokens are streamed;
@@ -590,6 +603,19 @@ async def stream_query(user_id: str, messages: list) -> AsyncIterator[dict]:
     if citations:
         yield {"type": "citations", "citations": citations}
 
-    usage = tracker.finish().as_dict()
+    usage_total = tracker.finish()
+    usage = usage_total.as_dict()
+
+    tracing.annotate_current_span(
+        **{
+            "rag.route": str(final_state.get("route") or ""),
+            "rag.citations": len(citations),
+            "rag.model_calls": usage_total.calls,
+            "rag.total_tokens": usage_total.total_tokens,
+            "rag.cost_usd": usage_total.cost_usd,
+            "rag.streamed": True,
+        }
+    )
+
     yield {"type": "usage", "usage": usage}
     yield {"type": "done", "answer": answer, "citations": citations, "usage": usage}

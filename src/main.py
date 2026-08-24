@@ -20,6 +20,7 @@ from src.api import ratelimit
 from src.api.auth_routes import router as auth_router
 from src.api.deps import CurrentUser, get_current_user
 from src.api.routes import router as rag_router
+from src.core import tracing
 from src.core.config import settings
 from src.core.exceptions import AdaptiveRagError
 from src.core.logger import configure_logging, get_logger, request_id_var
@@ -73,6 +74,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    tracing.shutdown()
     await mongo_client.close_client()
     logger.info("Adaptive RAG API stopped")
 
@@ -165,6 +167,10 @@ async def handle_unexpected_error(request: Request, exc: Exception) -> JSONRespo
     )
 
 
+# Instrumentation wraps the app, so it must be attached before the routers
+# start serving.
+tracing.configure_tracing(app)
+
 app.include_router(auth_router)
 app.include_router(rag_router)
 
@@ -205,6 +211,7 @@ async def readyz() -> JSONResponse:
     body = {
         "status": "ok" if vector_healthy else "degraded",
         "vector_store": vector_detail,
+        "tracing": "enabled" if tracing.tracing_enabled() else "disabled",
         "persistence": persistence,
         "web_search": "enabled" if settings.web_search_enabled else "disabled",
         "version": settings.APP_VERSION,
