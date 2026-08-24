@@ -12,6 +12,7 @@ leaves the UI hanging forever.
 import logging
 import os
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -158,7 +159,7 @@ def logout(token: str) -> None:
     _post("/auth/logout", AUTH_TIMEOUT, headers=_auth_header(token))
 
 
-def query_backend(query: str, session_id: str, token: str) -> tuple[str, list]:
+def query_backend(query: str, session_id: str, token: str) -> tuple[str, list, dict]:
     """
     Ask the RAG pipeline a question.
 
@@ -168,7 +169,7 @@ def query_backend(query: str, session_id: str, token: str) -> tuple[str, list]:
         token: The caller's access token.
 
     Returns:
-        The answer and the sources it was grounded in.
+        The answer, its sources, and the token usage for the turn.
 
     Raises:
         ApiError: If the request fails.
@@ -179,7 +180,7 @@ def query_backend(query: str, session_id: str, token: str) -> tuple[str, list]:
         json={"query": query, "session_id": session_id},
         headers=_auth_header(token),
     )
-    return body["answer"], body.get("citations") or []
+    return body["answer"], body.get("citations") or [], body.get("usage") or {}
 
 
 def upload_document(file, description: str, token: str) -> dict[str, Any]:
@@ -203,6 +204,57 @@ def upload_document(file, description: str, token: str) -> dict[str, Any]:
         files={"file": (file.name, file.getvalue(), file.type)},
         headers={**_auth_header(token), "X-Description": description},
     )
+
+
+def list_documents(token: str) -> list[dict]:
+    """
+    List the documents the caller has indexed.
+
+    Args:
+        token: The caller's access token.
+
+    Returns:
+        One entry per source document.
+
+    Raises:
+        ApiError: If the request fails.
+    """
+    url = f"{API_BASE_URL}/rag/documents"
+    try:
+        response = requests.get(url, headers=_auth_header(token), timeout=AUTH_TIMEOUT)
+    except requests.RequestException as exc:
+        raise ApiError("Could not reach the API.") from exc
+
+    if not response.ok:
+        raise ApiError(_detail(response))
+    return response.json().get("documents") or []
+
+
+def delete_document(filename: str, token: str) -> int:
+    """
+    Remove one indexed document.
+
+    Args:
+        filename: The document to remove.
+        token: The caller's access token.
+
+    Returns:
+        The number of chunks removed.
+
+    Raises:
+        ApiError: If the request fails.
+    """
+    url = f"{API_BASE_URL}/rag/documents/{quote(filename)}"
+    try:
+        response = requests.delete(
+            url, headers=_auth_header(token), timeout=UPLOAD_TIMEOUT
+        )
+    except requests.RequestException as exc:
+        raise ApiError("Could not reach the API.") from exc
+
+    if not response.ok:
+        raise ApiError(_detail(response))
+    return int(response.json().get("chunks_deleted", 0))
 
 
 def api_available() -> bool:

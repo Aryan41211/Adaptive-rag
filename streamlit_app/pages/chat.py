@@ -16,6 +16,8 @@ st.set_page_config(
 
 from utils.api_client import (  # noqa: E402
     ApiError,
+    delete_document,
+    list_documents,
     logout,
     query_backend,
     upload_document,
@@ -106,11 +108,38 @@ with st.sidebar:
                             f"({result['chunks_indexed']} chunks)."
                         )
 
-    if st.session_state.uploaded_files:
-        st.divider()
-        st.caption("Indexed this session:")
-        for result in st.session_state.uploaded_files.values():
-            st.write(f"• {result['filename']} ({result['chunks_indexed']} chunks)")
+    # Indexed documents are read back from the API rather than tracked
+    # locally, so the list stays correct across sessions and devices.
+    st.divider()
+    st.subheader("Indexed documents")
+    try:
+        documents = list_documents(token)
+    except ApiError as exc:
+        st.error(str(exc))
+        documents = []
+
+    if not documents:
+        st.caption("Nothing indexed yet.")
+    else:
+        for document in documents:
+            row, action = st.columns([4, 1])
+            with row:
+                st.write(f"**{document['filename']}**")
+                st.caption(f"{document['chunks']} chunks")
+            with action:
+                if st.button(
+                    "🗑",
+                    key=f"delete-{document['filename']}",
+                    help=f"Remove {document['filename']}",
+                ):
+                    try:
+                        removed = delete_document(document["filename"], token)
+                    except ApiError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.session_state.uploaded_files = {}
+                        st.success(f"Removed {removed} chunks.")
+                        st.rerun()
 
 
 # --- Conversation ----------------------------------------------------------
@@ -143,12 +172,20 @@ if user_input:
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             try:
-                answer, citations = query_backend(
+                answer, citations, usage = query_backend(
                     user_input, st.session_state["session_id"], token
                 )
+                usage = {}
             except ApiError as exc:
                 answer = f"⚠️ {exc}"
+                usage = {}
         st.write(answer)
         render_citations(citations)
+        if usage.get("total_tokens"):
+            st.caption(
+                f"{usage['total_tokens']:,} tokens across "
+                f"{usage.get('calls', 0)} model calls "
+                f"(~${usage.get('cost_usd', 0):.4f})"
+            )
 
     st.session_state.chat_history.append(("assistant", answer, citations))
