@@ -91,3 +91,10 @@ class TokenRevokedError(AuthenticationError):
     """Raised when a token has been explicitly signed out."""
 
     default_message = "This session has been signed out."
+
+
+class DocumentNotFoundError(AdaptiveRagError):
+    """Raised when a requested document is not in the caller's index."""
+
+    status_code = 404
+    default_message = "No such document."

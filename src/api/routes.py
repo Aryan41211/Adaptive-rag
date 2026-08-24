@@ -16,10 +16,14 @@ from src.core.logger import get_logger
 from src.memory.chat_history_mongo import ChatHistory
 from src.models.query_request import (
     Citation,
+    DeletionResponse,
+    DocumentListResponse,
+    DocumentSummary,
     QueryRequest,
     QueryResponse,
     UploadResponse,
 )
+from src.rag import vector_store
 from src.rag.document_upload import process_upload
 from src.rag.graph_builder import run_query
 
@@ -49,7 +53,7 @@ async def rag_query(
     messages = await history.get_messages()
 
     # run_query awaits the graph, so long model calls never block the loop.
-    answer, citations = await run_query(user_id=user.user_id, messages=messages)
+    answer, citations, usage = await run_query(user_id=user.user_id, messages=messages)
 
     await history.add_message(AIMessage(content=answer))
 
@@ -57,6 +61,7 @@ async def rag_query(
         answer=answer,
         session_id=req.session_id,
         citations=[Citation(**citation) for citation in citations],
+        usage=usage,
     )
 
 
@@ -117,3 +122,84 @@ async def upload_file(
         stream=file.file,
     )
     return UploadResponse(**result)
+
+
+@router.get("/documents", response_model=DocumentListResponse)
+async def list_documents(
+    user: CurrentUser = Depends(get_current_user),
+) -> DocumentListResponse:
+    """
+    List the documents the caller has indexed.
+
+    Args:
+        user: The authenticated caller.
+
+    Returns:
+        One entry per source document, with its chunk count.
+    """
+    documents = await run_in_threadpool(vector_store.list_documents, user.user_id)
+    return DocumentListResponse(
+        documents=[DocumentSummary(**document) for document in documents],
+        total_chunks=sum(document["chunks"] for document in documents),
+    )
+
+
+@router.delete("/documents/{filename:path}", response_model=DeletionResponse)
+async def delete_document(
+    filename: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> DeletionResponse:
+    """
+    Remove one of the caller's documents from the index.
+
+    Args:
+        filename: The source filename to remove.
+        user: The authenticated caller.
+
+    Returns:
+        How many chunks were removed.
+
+    Raises:
+        DocumentNotFoundError: If the caller has no such document.
+    """
+    removed = await run_in_threadpool(
+        vector_store.delete_document, user.user_id, filename
+    )
+    if removed == 0:
+        from src.core.exceptions import DocumentNotFoundError
+
+        raise DocumentNotFoundError(f"No indexed document named '{filename}'.")
+
+    # The cached agent is keyed on index version, which deletion advances.
+    from src.rag.reAct_agent import reset_cache
+
+    reset_cache(user.user_id)
+
+    logger.info("Deleted document '%s' (%d chunks)", filename, removed)
+    return DeletionResponse(filename=filename, chunks_deleted=removed)
+
+
+@router.delete("/documents", response_model=DeletionResponse)
+async def delete_all_documents(
+    user: CurrentUser = Depends(get_current_user),
+) -> DeletionResponse:
+    """
+    Remove every document the caller has indexed.
+
+    Args:
+        user: The authenticated caller.
+
+    Returns:
+        How many chunks were removed.
+    """
+    documents = await run_in_threadpool(vector_store.list_documents, user.user_id)
+    total = sum(document["chunks"] for document in documents)
+
+    await run_in_threadpool(vector_store.reset, user.user_id)
+
+    from src.rag.reAct_agent import reset_cache
+
+    reset_cache(user.user_id)
+
+    logger.info("Cleared all documents (%d chunks)", total)
+    return DeletionResponse(chunks_deleted=total)

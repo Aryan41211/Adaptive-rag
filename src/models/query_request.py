@@ -66,6 +66,13 @@ class QueryResponse(BaseModel):
             "general knowledge or web search."
         ),
     )
+    usage: dict = Field(
+        default_factory=dict,
+        description=(
+            "Token counts and estimated cost for this turn, across every "
+            "model call it made."
+        ),
+    )
 
 
 class UploadResponse(BaseModel):
@@ -75,6 +82,27 @@ class UploadResponse(BaseModel):
     chunks_indexed: int
     total_chunks: int
     description: str
+
+
+class DocumentSummary(BaseModel):
+    """One indexed source document."""
+
+    filename: str
+    chunks: int
+
+
+class DocumentListResponse(BaseModel):
+    """The documents a user has indexed."""
+
+    documents: list[DocumentSummary] = Field(default_factory=list)
+    total_chunks: int = 0
+
+
+class DeletionResponse(BaseModel):
+    """Result of removing indexed content."""
+
+    filename: str | None = None
+    chunks_deleted: int
 
 
 class RegisterRequest(BaseModel):
