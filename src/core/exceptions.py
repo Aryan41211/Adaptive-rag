@@ -65,6 +65,7 @@ class RetrievalError(AdaptiveRagError):
     status_code = 502
     default_message = "The retrieval pipeline failed to produce an answer."
 
+
 class IndexingError(AdaptiveRagError):
     """Raised when the embedding provider fails while indexing a document."""
 
@@ -73,3 +74,20 @@ class IndexingError(AdaptiveRagError):
         "The document could not be indexed because the embedding service is "
         "unavailable. Please try again."
     )
+
+
+class RateLimitExceededError(AdaptiveRagError):
+    """Raised when a caller exceeds their request quota."""
+
+    status_code = 429
+    default_message = "Too many requests. Please slow down."
+
+    def __init__(self, message: str | None = None, retry_after: int = 60):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class TokenRevokedError(AuthenticationError):
+    """Raised when a token has been explicitly signed out."""
+
+    default_message = "This session has been signed out."
