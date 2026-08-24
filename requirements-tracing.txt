@@ -1,0 +1,11 @@
+# Optional OpenTelemetry tracing. Install alongside requirements.txt when you
+# want traces exported:
+#   pip install -r requirements.txt -r requirements-tracing.txt
+#
+# The application runs without these; tracing stays disabled unless the
+# packages are present AND OTEL_EXPORTER_OTLP_ENDPOINT is set.
+opentelemetry-sdk>=1.27,<2
+opentelemetry-exporter-otlp-proto-http>=1.27,<2
+opentelemetry-instrumentation-fastapi>=0.48b0,<1
+opentelemetry-instrumentation-httpx>=0.48b0,<1
+opentelemetry-instrumentation-pymongo>=0.48b0,<1
