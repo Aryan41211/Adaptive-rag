@@ -2,10 +2,18 @@
 Route identifier model.
 """
 
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 
 class RouteIdentifier(BaseModel):
-    """Model for routing queries to appropriate nodes."""
+    """Routing decision produced by the query classifier."""
 
-    route: str
+    route: Literal["index", "general", "search"] = Field(
+        description=(
+            "'index' to answer from the user's uploaded documents, "
+            "'general' to answer from general knowledge, "
+            "'search' to look the answer up on the web."
+        )
+    )
