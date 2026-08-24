@@ -9,8 +9,10 @@ Every request carries an explicit timeout: without one a stalled backend
 leaves the UI hanging forever.
 """
 
+import json
 import logging
 import os
+from collections.abc import Iterator
 from typing import Any
 from urllib.parse import quote
 
@@ -181,6 +183,52 @@ def query_backend(query: str, session_id: str, token: str) -> tuple[str, list, d
         headers=_auth_header(token),
     )
     return body["answer"], body.get("citations") or [], body.get("usage") or {}
+
+
+def stream_query(query: str, session_id: str, token: str) -> Iterator[dict]:
+    """
+    Ask the RAG pipeline a question, yielding events as they arrive.
+
+    Args:
+        query: The user's question.
+        session_id: The conversation identifier.
+        token: The caller's access token.
+
+    Yields:
+        Event dictionaries as documented by the streaming endpoint.
+
+    Raises:
+        ApiError: If the connection fails or the server rejects the request.
+    """
+    url = f"{API_BASE_URL}/rag/query/stream"
+    try:
+        response = requests.post(
+            url,
+            json={"query": query, "session_id": session_id},
+            headers=_auth_header(token),
+            timeout=QUERY_TIMEOUT,
+            stream=True,
+        )
+    except requests.Timeout as exc:
+        raise ApiError("The server took too long to respond.") from exc
+    except requests.RequestException as exc:
+        raise ApiError(
+            f"Could not reach the API at {API_BASE_URL}. Is the backend running?"
+        ) from exc
+
+    # Errors before the stream opens still arrive as a normal status code.
+    if not response.ok:
+        raise ApiError(_detail(response))
+
+    with response:
+        for line in response.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
+            try:
+                yield json.loads(line[len("data: ") :])
+            except ValueError:
+                # A malformed frame is not worth aborting a live answer for.
+                continue
 
 
 def upload_document(file, description: str, token: str) -> dict[str, Any]:

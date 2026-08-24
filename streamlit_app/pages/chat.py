@@ -19,7 +19,7 @@ from utils.api_client import (  # noqa: E402
     delete_document,
     list_documents,
     logout,
-    query_backend,
+    stream_query,
     upload_document,
 )
 
@@ -168,18 +168,48 @@ if user_input:
     st.session_state.chat_history.append(("user", user_input, []))
     st.chat_message("user").write(user_input)
 
+    answer = ""
     citations = []
+    usage = {}
+
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            try:
-                answer, citations, usage = query_backend(
-                    user_input, st.session_state["session_id"], token
-                )
-                usage = {}
-            except ApiError as exc:
-                answer = f"⚠️ {exc}"
-                usage = {}
-        st.write(answer)
+        # A placeholder rather than st.write_stream: the server can ask us to
+        # discard what has been shown so far when verification rejects an
+        # answer and it is regenerated.
+        placeholder = st.empty()
+        status = st.empty()
+        status.caption("Thinking...")
+
+        try:
+            for event in stream_query(
+                user_input, st.session_state["session_id"], token
+            ):
+                kind = event.get("type")
+
+                if kind == "token":
+                    answer += event.get("text", "")
+                    placeholder.markdown(answer)
+                    status.empty()
+                elif kind == "restart":
+                    answer = ""
+                    placeholder.markdown("")
+                    status.caption("Refining the answer...")
+                elif kind == "citations":
+                    citations = event.get("citations") or []
+                elif kind == "usage":
+                    usage = event.get("usage") or {}
+                elif kind == "error":
+                    answer = f"⚠️ {event.get('message', 'The assistant failed.')}"
+                    placeholder.markdown(answer)
+                elif kind == "done":
+                    answer = event.get("answer") or answer
+                    citations = event.get("citations") or citations
+                    usage = event.get("usage") or usage
+        except ApiError as exc:
+            answer = f"⚠️ {exc}"
+            placeholder.markdown(answer)
+
+        status.empty()
         render_citations(citations)
         if usage.get("total_tokens"):
             st.caption(
