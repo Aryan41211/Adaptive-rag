@@ -157,7 +157,7 @@ Adaptive-Rag/
 │   ├── pages/chat.py                 # Chat and document upload
 │   └── utils/api_client.py           # Typed API client with timeouts
 │
-├── tests/                            # 399 tests (pytest)
+├── tests/                            # 432 tests (pytest)
 │   ├── conftest.py                   # Fixtures, fakes, state reset
 │   ├── test_config.py                # Settings validation
 │   ├── test_security.py              # Hashing and JWT
@@ -181,8 +181,11 @@ Adaptive-Rag/
 │
 ├── deploy/
 │   ├── Caddyfile                     # TLS reverse proxy configuration
-│   ├── backup.sh                     # MongoDB + Qdrant backup
+│   ├── backup.sh                     # MongoDB + Qdrant backup, with retention
 │   └── restore.sh                    # Restore from a backup
+│
+├── scripts/
+│   └── check_lock.py                 # Lock file matches requirements (CI gate)
 │
 ├── .env.example                      # Documented configuration template
 ├── requirements.txt                  # Runtime dependencies (LangChain pinned)
@@ -721,14 +724,28 @@ Query Classification
 - **Data deletion** — a user can list and remove individual documents, clear
   them all, or delete their account and everything attached to it
 
+- **Authenticated MongoDB** — the compose stack refuses to start without
+  `MONGO_ROOT_PASSWORD` rather than running the database open, and both data
+  stores publish their ports on the loopback interface only
+- **Secrets from files** — any setting can be supplied as a file in
+  `SECRETS_DIR` (default `/run/secrets`), the convention used by Docker
+  secrets, Kubernetes secret volumes and most secret managers, keeping
+  credentials out of the process environment
+- **Schema not published** — `/docs`, `/redoc` and `/openapi.json` are removed
+  entirely when `ENABLE_API_DOCS=false`, and the TLS profile's reverse proxy
+  returns 404 for them regardless
+
 ### Still required before public exposure
 
-- **MongoDB credentials/TLS** — supply an authenticated connection string in
-  production; the compose stack runs it unauthenticated on a private network
-- **Secret management** — `.env` is fine for local use; use a secret manager in
-  deployment
-- **Backup scheduling** — `deploy/backup.sh` exists and is verified, but
-  scheduling and retention are yours to configure
+- **MongoDB TLS** — the bundled database authenticates but speaks plaintext on
+  the compose network. Supply a TLS connection string for a database that
+  crosses a host boundary
+- **Backup retention is opt-in** — set `RETAIN=N` on `deploy/backup.sh` to keep
+  the newest N. Left unset it keeps every backup, because deleting them by
+  default is the wrong way round for a backup script to be wrong
+- **Rotating the MongoDB password** — `MONGO_ROOT_PASSWORD` is only applied
+  when the `mongo_data` volume is first created; changing it later means back
+  up, recreate the volume, restore
 
 ---
 
@@ -792,16 +809,29 @@ user registered on one worker cannot log in on another.
 ### Containerisation
 
 ```bash
-cp .env.example .env          # set OPENAI_API_KEY and JWT_SECRET_KEY
+cp .env.example .env    # set OPENAI_API_KEY, JWT_SECRET_KEY, MONGO_ROOT_PASSWORD
 docker compose up --build
 ```
 
-Brings up the API (`:8000`), the Streamlit UI (`:8501`), Qdrant (`:6333`) and
-MongoDB (`:27017`). The API waits for Qdrant and MongoDB to report healthy
-before starting, so it never boots into its non-durable fallbacks by accident.
+Brings up the API (`:8000`), the Streamlit UI (`:8501`), Qdrant and MongoDB.
+The API waits for Qdrant and MongoDB to report healthy before starting, so it
+never boots into its non-durable fallbacks by accident.
+
+MongoDB requires authentication: compose refuses to start without
+`MONGO_ROOT_PASSWORD` rather than leaving the database open. Both data stores
+publish on `127.0.0.1` only — bound to `0.0.0.0` they would be reachable from
+anywhere that can route to the host, which on a cloud VM means the internet.
+The API reaches them over the compose network, which those port mappings play
+no part in; they exist for `deploy/backup.sh` and local tooling.
+
+The credentials are applied only when the `mongo_data` volume is first
+created. Turning authentication on for a stack that has already run means:
+back up, `docker compose down -v`, start again, restore.
 
 The image is multi-stage, runs as an unprivileged user, and carries a
-healthcheck against `/healthz`.
+healthcheck against `/healthz`. The UI runs the same image with a different
+command, so it overrides that healthcheck: the image's probe targets the API
+port, and inherited unchanged it would report the UI unhealthy forever.
 
 To build the API image alone:
 
@@ -810,16 +840,56 @@ docker build -t adaptive-rag .
 docker run -p 8000:8000 -e OPENAI_API_KEY=... -e JWT_SECRET_KEY=... adaptive-rag
 ```
 
+### Published images
+
+CI publishes to GitHub Container Registry after lint, tests and the image
+smoke test all pass, on pushes to `main` and on `v*` tags. Pull requests build
+the image but never push one.
+
+```bash
+docker pull ghcr.io/<owner>/<repo>:latest      # newest v* tag
+docker pull ghcr.io/<owner>/<repo>:main        # tip of main
+docker pull ghcr.io/<owner>/<repo>:1.0.0       # an exact release
+docker pull ghcr.io/<owner>/<repo>:sha-<sha>   # an exact commit
+```
+
+Publishing needs no configured secrets: `GITHUB_TOKEN` authenticates to
+GitHub's own registry. To publish elsewhere, change the registry in the
+`publish` job of `.github/workflows/ci.yml` and add that registry's
+credentials as repository secrets. Packages are private by default — make the
+package public, or `docker login ghcr.io` before pulling.
+
+### Secrets
+
+Every setting can be supplied as a file named after it inside `SECRETS_DIR`
+(default `/run/secrets`) instead of as an environment variable — the
+convention used by Docker secrets, Kubernetes secret volumes and most secret
+managers. This keeps credentials out of the process environment, where
+`docker inspect`, a crash dump and every child process can read them back.
+
+```bash
+printf 'sk-...' | docker secret create openai_api_key -
+```
+
+Environment variables win when both are present, and a missing directory is
+ignored, so the default is safe to leave alone off-container.
+
 ### TLS
 
 ```bash
-DOMAIN=rag.example.com ACME_EMAIL=you@example.com   docker compose --profile tls up -d
+DOMAIN=rag.example.com ACME_EMAIL=you@example.com \
+  docker compose --profile tls up -d
 ```
 
 Adds a Caddy reverse proxy on :80 and :443 that obtains and renews a Let's
 Encrypt certificate automatically, redirects HTTP to HTTPS, and sets HSTS,
 `X-Content-Type-Options`, `X-Frame-Options` and `Referrer-Policy`. It forwards
 the real client address, which the rate limiter keys on.
+
+`/docs`, `/redoc` and `/openapi.json` return 404 at this edge. The schema
+enumerates every endpoint, parameter and payload shape, which is a map of the
+attack surface; reach it on the API port from inside the private network, or
+delete that block in `deploy/Caddyfile` to publish it deliberately.
 
 Use `DOMAIN=localhost` to try it locally; Caddy then issues an internal
 certificate rather than contacting Let's Encrypt.
@@ -840,14 +910,33 @@ Qdrant is reached over HTTP (`QDRANT_URL`, default `http://localhost:6333`)
 because its image ships no shell HTTP client; MongoDB is reached through the
 container, because `mongodump` must run beside the server.
 
-Schedule it however you schedule other jobs — the script is a plain
-executable and writes a self-describing directory:
+MongoDB credentials come from `MONGO_ROOT_USERNAME` / `MONGO_ROOT_PASSWORD`,
+read from `.env` (or `ENV_FILE`) when not already in the environment, so a
+scheduled run needs no extra configuration. The file is parsed rather than
+sourced — sourcing it would execute whatever happens to be in there. Set
+`QDRANT_API_KEY` and it is sent as an `api-key` header.
+
+#### Retention
+
+`RETAIN=N` keeps the newest N backups and removes the rest. Unset, every
+backup is kept: deleting them by default is the wrong way round for a backup
+script to be wrong. Pruning runs only after the new backup completes, so a
+failed run can never be the reason an old one was deleted, and only
+directories matching this script's own `<timestamp>` layout are ever
+considered — anything else you keep alongside them is left alone.
+
+#### Scheduling
+
+The script is a plain executable that writes a self-describing directory, so
+schedule it however you schedule other jobs:
 
 ```
-0 3 * * *  cd /srv/adaptive-rag && ./deploy/backup.sh /backups >> /var/log/rag-backup.log 2>&1
+0 3 * * *  cd /srv/adaptive-rag && RETAIN=14 ./deploy/backup.sh /backups >> /var/log/rag-backup.log 2>&1
 ```
 
-Nothing rotates old backups; that is left to your retention policy.
+A backup you have never restored is a hypothesis, not a backup. The
+round trip — back up, mutate, restore, confirm the mutation is gone — takes a
+minute against a staging stack and is the only thing that proves it works.
 
 ### Tracing
 
@@ -1072,7 +1161,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
   recover cycle
 - ✅ **Optional OpenTelemetry tracing**, annotated with route, tokens and cost
 - ✅ CI: lint, tests on two Python versions, and a Docker build smoke test
-- ✅ Automated test suite (399 tests, 94% coverage of `src/`)
+- ✅ Automated test suite (432 tests, 94% coverage of `src/`)
 
 ### Not yet done
 
