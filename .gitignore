@@ -21,5 +21,9 @@ env/
 
 # Runtime artefacts
 *.log
-data/
+# Anchored to the repository root. Unanchored, this also matched
+# evals/data/, which kept the golden dataset out of every clone and failed
+# the eval tests anywhere but the machine that wrote it.
+/data/
 description.txt
+backups/

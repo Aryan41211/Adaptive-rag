@@ -1,0 +1,152 @@
+# Golden dataset for the RAG evaluation harness.
+#
+# Documents are indexed into a scratch user before the cases run, so the run
+# never touches real user data. Content is synthetic and self-contained: the
+# facts asserted below appear nowhere in a model's training data, so a case
+# can only pass by actually retrieving the document.
+
+documents:
+  - filename: orbital-mechanics.txt
+    description: internal notes on the Kestrel satellite programme
+    content: |
+      Kestrel Programme - Internal Technical Notes
+
+      The Kestrel-7 satellite was launched on 14 March 2019 from the
+      Варандей northern range. It carries three instruments: the Marlowe
+      spectrometer, the Ashby particle counter, and a redundant telemetry
+      package designated TX-4.
+
+      Kestrel-7 maintains a sun-synchronous orbit at an altitude of 812
+      kilometres with an inclination of 98.7 degrees. Its orbital period is
+      101.4 minutes.
+
+      The Marlowe spectrometer operates in the 240-390 nanometre band and
+      samples at 12 hertz. It was calibrated against the Brennan reference
+      standard in February 2019, two weeks before launch.
+
+      Power is supplied by two gallium arsenide arrays producing a combined
+      2.1 kilowatts at beginning of life, degrading to an expected 1.7
+      kilowatts after five years.
+
+      The programme's mission director is Dr Alina Petrosyan. Ground control
+      is handled from the Thornbury facility.
+
+  - filename: employee-handbook.txt
+    description: the Cavendish Logistics employee handbook
+    content: |
+      Cavendish Logistics - Employee Handbook (Revision 11)
+
+      Annual leave. Full-time employees accrue 26 days of annual leave per
+      calendar year, plus public holidays. Leave accrues monthly and may be
+      carried over to a maximum of 5 days into the following year.
+
+      Remote work. Employees may work remotely up to 3 days per week with
+      manager approval. Fully remote arrangements require director sign-off
+      and are reviewed every 6 months.
+
+      Expenses. Claims must be submitted within 60 days of the expense being
+      incurred. Claims over 400 pounds require pre-approval. Mileage is
+      reimbursed at 45 pence per mile for the first 10,000 miles.
+
+      Probation. New employees serve a probationary period of 4 months, during
+      which either party may terminate the contract with 1 week of notice.
+
+      The employee assistance programme is operated by Halden Wellbeing and is
+      reachable on extension 4402.
+
+cases:
+  # --- retrieval from the indexed documents --------------------------------
+  - id: kestrel-altitude
+    question: What altitude does Kestrel-7 orbit at?
+    expected_route: index
+    expected_source: orbital-mechanics.txt
+    must_include: ["812"]
+    notes: Single fact, stated plainly in one chunk.
+
+  - id: kestrel-instruments
+    question: Which instruments does Kestrel-7 carry?
+    expected_route: index
+    expected_source: orbital-mechanics.txt
+    must_include: ["Marlowe", "Ashby"]
+    notes: Requires listing several items from one passage.
+
+  - id: kestrel-director
+    question: Who is the mission director of the Kestrel programme?
+    expected_route: index
+    expected_source: orbital-mechanics.txt
+    must_include: ["Petrosyan"]
+
+  - id: kestrel-spectrometer-band
+    question: What wavelength band does the Marlowe spectrometer operate in?
+    expected_route: index
+    expected_source: orbital-mechanics.txt
+    must_include: ["240", "390"]
+
+  - id: handbook-leave
+    question: How many days of annual leave do full-time employees get?
+    expected_route: index
+    expected_source: employee-handbook.txt
+    must_include: ["26"]
+
+  - id: handbook-expenses-deadline
+    question: How long do I have to submit an expense claim?
+    expected_route: index
+    expected_source: employee-handbook.txt
+    must_include: ["60"]
+    notes: Phrased differently from the document, so lexical overlap is low.
+
+  - id: handbook-remote-days
+    question: How many days a week can I work from home?
+    expected_route: index
+    expected_source: employee-handbook.txt
+    must_include: ["3"]
+    notes: Colloquial phrasing of "remote work up to 3 days per week".
+
+  - id: handbook-probation
+    question: What is the probationary period for new starters?
+    expected_route: index
+    expected_source: employee-handbook.txt
+    must_include: ["4"]
+
+  # --- cross-document: the wrong document must not be used -----------------
+  - id: cross-document-leave-not-orbit
+    question: What is the carry-over limit for unused annual leave?
+    expected_route: index
+    expected_source: employee-handbook.txt
+    must_include: ["5"]
+    must_not_include: ["Kestrel", "satellite"]
+    notes: Both documents are indexed; only one is relevant.
+
+  # --- questions the documents cannot answer -------------------------------
+  - id: unanswerable-launch-cost
+    question: How much did the Kestrel-7 launch cost in US dollars?
+    expected_route: index
+    expected_source: orbital-mechanics.txt
+    must_not_include: ["$"]
+    notes: >
+      The cost appears nowhere in the documents. The failure mode is inventing
+      a plausible figure, so this case checks for the absence of one.
+
+  - id: unanswerable-pension
+    question: What is the company pension contribution rate?
+    expected_route: index
+    expected_source: employee-handbook.txt
+    must_not_include: ["%"]
+    notes: Not in the handbook; a percentage would be fabricated.
+
+  # --- general knowledge, not the documents --------------------------------
+  - id: general-arithmetic
+    question: What is 17 multiplied by 4?
+    expected_route: general
+    must_include: ["68"]
+    notes: Answerable without any document; must not be routed to retrieval.
+
+  - id: general-capital
+    question: What is the capital city of Australia?
+    expected_route: general
+    must_include: ["Canberra"]
+
+  - id: general-greeting
+    question: Hello, what can you help me with?
+    expected_route: general
+    notes: Conversational turn; routing is the only thing measured.
