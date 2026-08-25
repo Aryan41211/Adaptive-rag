@@ -12,6 +12,7 @@ invalidates it immediately.
 """
 
 import threading
+from collections import OrderedDict
 
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain_core.prompts import PromptTemplate
@@ -27,8 +28,16 @@ logger = get_logger(__name__)
 config = Config()
 
 _lock = threading.RLock()
-# user_id -> (index_version, executor)
-_executor_cache: dict[str, tuple[int, AgentExecutor]] = {}
+
+# Bounds the cache. An entry is retained per distinct user, and nothing ever
+# removed one: a long-running deployment accumulated an executor for every
+# user who had ever queried. Evicting the least recently used entry costs one
+# rebuild on the next request from that user, which is the same cost already
+# paid after an upload invalidates their entry.
+MAX_CACHED_EXECUTORS = 256
+
+# user_id -> (index_version, executor), ordered least-recently-used first.
+_executor_cache: OrderedDict[str, tuple[int, AgentExecutor]] = OrderedDict()
 
 
 def _build_executor(user_id: str) -> AgentExecutor | None:
@@ -70,6 +79,7 @@ def get_agent_executor(user_id: str) -> AgentExecutor | None:
     with _lock:
         cached = _executor_cache.get(user_id)
         if cached is not None and cached[0] == version:
+            _executor_cache.move_to_end(user_id)
             return cached[1]
 
         executor = _build_executor(user_id)
@@ -79,6 +89,10 @@ def get_agent_executor(user_id: str) -> AgentExecutor | None:
 
         logger.info("Built ReAct agent for index version %d", version)
         _executor_cache[user_id] = (version, executor)
+        _executor_cache.move_to_end(user_id)
+        while len(_executor_cache) > MAX_CACHED_EXECUTORS:
+            evicted, _entry = _executor_cache.popitem(last=False)
+            logger.debug("Evicted cached ReAct agent for user %s", evicted)
         return executor
 
 

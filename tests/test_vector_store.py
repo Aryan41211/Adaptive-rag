@@ -179,6 +179,54 @@ def test_agents_are_not_shared_between_users(any_backend):
     assert "beta secret" in b_result and "alpha secret" not in b_result
 
 
+def test_agent_cache_is_bounded(any_backend, monkeypatch):
+    """
+    Unbounded, the cache kept an executor for every user who ever queried, so
+    a long-running deployment leaked memory in proportion to its user count.
+    """
+    monkeypatch.setattr(reAct_agent, "MAX_CACHED_EXECUTORS", 3)
+
+    for index in range(6):
+        user = f"user-{index}"
+        vector_store.add_documents(user, _docs(f"content {index}"), "d")
+        assert reAct_agent.get_agent_executor(user) is not None
+
+    assert len(reAct_agent._executor_cache) == 3
+
+
+def test_agent_cache_evicts_the_least_recently_used(any_backend, monkeypatch):
+    """A user still being served must not be evicted for an idle one."""
+    monkeypatch.setattr(reAct_agent, "MAX_CACHED_EXECUTORS", 2)
+
+    for user in ("user-a", "user-b"):
+        vector_store.add_documents(user, _docs(f"content for {user}"), "d")
+        reAct_agent.get_agent_executor(user)
+
+    # Touching user-a makes user-b the least recently used.
+    reAct_agent.get_agent_executor("user-a")
+
+    vector_store.add_documents("user-c", _docs("content for user-c"), "d")
+    reAct_agent.get_agent_executor("user-c")
+
+    assert set(reAct_agent._executor_cache) == {"user-a", "user-c"}
+
+
+def test_eviction_costs_a_rebuild_not_a_wrong_answer(any_backend, monkeypatch):
+    """An evicted user is rebuilt against their own documents, not a stale one."""
+    monkeypatch.setattr(reAct_agent, "MAX_CACHED_EXECUTORS", 1)
+
+    vector_store.add_documents("user-a", _docs("alpha secret"), "a")
+    first = reAct_agent.get_agent_executor("user-a")
+
+    vector_store.add_documents("user-b", _docs("beta secret"), "b")
+    reAct_agent.get_agent_executor("user-b")  # evicts user-a
+
+    rebuilt = reAct_agent.get_agent_executor("user-a")
+    assert rebuilt is not first
+    result = rebuilt.tools[0].invoke("secret")
+    assert "alpha secret" in result and "beta secret" not in result
+
+
 # --- backend selection -----------------------------------------------------
 def test_backend_reports_healthy(any_backend):
     healthy, detail = vector_store.health()
