@@ -55,16 +55,20 @@
 		reverse_proxy api:8000
 	}
 
+	# The interactive schema enumerates every endpoint, parameter and payload
+	# shape, which is a map of the attack surface. This profile is the public
+	# edge, so it is not served here; reach it on the API port from inside the
+	# private network, or delete this block to publish it deliberately.
 	handle /docs* {
-		reverse_proxy api:8000
+		respond 404
 	}
 
 	handle /redoc* {
-		reverse_proxy api:8000
+		respond 404
 	}
 
 	handle /openapi.json {
-		reverse_proxy api:8000
+		respond 404
 	}
 
 	# Everything else is the Streamlit UI, which needs websocket upgrades.
