@@ -153,3 +153,95 @@ def test_qdrant_url_selects_the_persistent_backend():
 
 def test_qdrant_collection_has_a_default():
     assert _settings().QDRANT_COLLECTION == "adaptive_rag_documents"
+
+
+# --- API schema exposure ----------------------------------------------------
+def test_api_docs_are_served_by_default():
+    """They are how the API is explored during development."""
+    assert _settings().ENABLE_API_DOCS is True
+
+
+@pytest.mark.parametrize("value", ["false", "0", "no", False])
+def test_api_docs_can_be_disabled(value):
+    assert _settings(ENABLE_API_DOCS=value).ENABLE_API_DOCS is False
+
+
+@pytest.mark.parametrize("route", ["/docs", "/redoc", "/openapi.json"])
+def test_disabling_docs_removes_the_route_entirely(route, monkeypatch):
+    """
+    Serving an empty page would still confirm the endpoint exists and leave
+    the schema reachable by another name; the route must be absent.
+    """
+    import importlib
+
+    import src.main
+    from src.core.config import settings as live_settings
+
+    monkeypatch.setattr(live_settings, "ENABLE_API_DOCS", False)
+    try:
+        rebuilt = importlib.reload(src.main)
+        assert route not in {r.path for r in rebuilt.app.routes}
+    finally:
+        # Restore the module other tests hold a reference into.
+        monkeypatch.undo()
+        importlib.reload(src.main)
+
+
+def test_docs_routes_are_present_when_enabled():
+    from src.main import app
+
+    paths = {r.path for r in app.routes}
+    assert {"/docs", "/redoc", "/openapi.json"} <= paths
+
+
+# --- secrets from files -----------------------------------------------------
+def test_a_setting_can_be_supplied_as_a_file(tmp_path, monkeypatch):
+    """
+    The convention used by Docker secrets and Kubernetes secret volumes: a
+    file named after the setting, containing only its value.
+    """
+    # The suite exports these for every other test; a file cannot be observed
+    # while the environment still wins.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+
+    (tmp_path / "OPENAI_API_KEY").write_text("sk-from-a-secret-file", encoding="utf-8")
+    (tmp_path / "JWT_SECRET_KEY").write_text(VALID_SECRET, encoding="utf-8")
+
+    settings = Settings(_env_file=None, _secrets_dir=str(tmp_path))
+    assert settings.OPENAI_API_KEY == "sk-from-a-secret-file"
+    assert settings.JWT_SECRET_KEY == VALID_SECRET
+
+
+def test_the_environment_wins_over_a_secret_file(tmp_path, monkeypatch):
+    """An explicit override must not be silently ignored in favour of a file."""
+    (tmp_path / "OPENAI_API_KEY").write_text("sk-from-the-file", encoding="utf-8")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-from-the-environment")
+
+    settings = Settings(
+        _env_file=None, _secrets_dir=str(tmp_path), JWT_SECRET_KEY=VALID_SECRET
+    )
+    assert settings.OPENAI_API_KEY == "sk-from-the-environment"
+
+
+def test_a_secret_file_still_faces_validation(tmp_path, monkeypatch):
+    """A weak secret in a file is no safer than one in the environment."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+
+    (tmp_path / "OPENAI_API_KEY").write_text("sk-real-looking-key", encoding="utf-8")
+    (tmp_path / "JWT_SECRET_KEY").write_text("too-short", encoding="utf-8")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, _secrets_dir=str(tmp_path))
+
+
+def test_a_missing_secrets_directory_is_not_an_error():
+    """The default path does not exist off-container; startup must not care."""
+    settings = Settings(
+        _env_file=None,
+        _secrets_dir=None,
+        OPENAI_API_KEY="sk-real-looking-key",
+        JWT_SECRET_KEY=VALID_SECRET,
+    )
+    assert settings.OPENAI_API_KEY == "sk-real-looking-key"

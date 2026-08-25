@@ -87,6 +87,11 @@ app = FastAPI(
         "obtained from /auth/login."
     ),
     lifespan=lifespan,
+    # Passing None removes the route entirely rather than leaving it serving
+    # an empty page, so a disabled schema cannot be read back by any means.
+    docs_url="/docs" if settings.ENABLE_API_DOCS else None,
+    redoc_url="/redoc" if settings.ENABLE_API_DOCS else None,
+    openapi_url="/openapi.json" if settings.ENABLE_API_DOCS else None,
 )
 
 

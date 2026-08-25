@@ -1,12 +1,13 @@
 """
 Core application configuration.
 
-Settings are loaded from the environment (and a local `.env` file) and
-validated at import time so that a misconfigured deployment fails fast and
-loudly, instead of surfacing as an opaque 401 from a downstream provider on
-the first user request.
+Settings are loaded from a secrets directory, the environment, and a local
+`.env` file, and validated at import time so that a misconfigured deployment
+fails fast and loudly, instead of surfacing as an opaque 401 from a downstream
+provider on the first user request.
 """
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -14,6 +15,16 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+# Docker secrets, Kubernetes secret volumes and most secret managers all
+# present a secret as a file named after it. Reading credentials from there
+# keeps them out of the process environment, where `docker inspect`, a crash
+# dump and every child process can read them back.
+#
+# Pointed at the directory only when it exists: pydantic-settings warns about
+# a missing secrets_dir, which would fire on every local run.
+SECRETS_DIR = Path(os.getenv("SECRETS_DIR", "/run/secrets"))
+_secrets_dir = str(SECRETS_DIR) if SECRETS_DIR.is_dir() else None
 
 # Placeholder values shipped in .env.example. Treated as "not configured" so a
 # copied-but-unedited .env fails validation rather than booting insecurely.
@@ -30,6 +41,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
+        secrets_dir=_secrets_dir,
         extra="ignore",
         case_sensitive=False,
     )
@@ -90,6 +102,11 @@ class Settings(BaseSettings):
     CORS_ALLOW_ORIGINS: str = ""
     # Comma-separated hostnames the API will answer to. "*" disables the check.
     ALLOWED_HOSTS: str = "*"
+    # Serves /docs, /redoc and /openapi.json. On by default because they are
+    # how the API is explored during development. The schema enumerates every
+    # endpoint and payload shape, so a public deployment should turn it off;
+    # the TLS profile's reverse proxy blocks these paths regardless.
+    ENABLE_API_DOCS: bool = True
 
     # --- Tracing ----------------------------------------------------------
     # Tracing is off unless an endpoint is set and the OpenTelemetry packages
