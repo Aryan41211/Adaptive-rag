@@ -29,11 +29,16 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install ruff==0.14.5
+      - run: pip install ruff==0.14.5 packaging
       - name: Ruff (lint)
         run: ruff check .
       - name: Ruff (format)
         run: ruff format --check .
+      # The lock file is what the image installs; requirements.txt is what the
+      # project claims to depend on. Drift between them is invisible until a
+      # deployed image behaves differently from a developer's virtualenv.
+      - name: Lock file matches requirements
+        run: python scripts/check_lock.py
 
   test:
     name: Tests (Python ${{ matrix.python-version }})
@@ -90,3 +95,67 @@ jobs:
           curl -sf http://127.0.0.1:8000/healthz
           curl -sf http://127.0.0.1:8000/readyz
           docker logs api
+      # The UI runs the same image with a different command. Its healthcheck
+      # is overridden in docker-compose.yml because the image's own probe
+      # targets the API port; verify the endpoint that override relies on.
+      - name: Smoke test the image as the UI
+        run: |
+          docker run -d --name ui -p 8501:8501 \
+            -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+            -e JWT_SECRET_KEY="$JWT_SECRET_KEY" \
+            adaptive-rag:ci \
+            streamlit run streamlit_app/home.py \
+              --server.port=8501 --server.address=0.0.0.0 --server.headless=true
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8501/_stcore/health && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:8501/_stcore/health
+          docker logs ui
+
+  publish:
+    name: Publish image
+    runs-on: ubuntu-latest
+    # Only ever publishes a commit that passed lint, tests and the image
+    # smoke test. Pull requests build but never push.
+    needs: [lint, test, docker]
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # GITHUB_TOKEN is enough for GitHub's own registry, so publishing needs
+      # no configured secrets. To publish elsewhere, change the registry and
+      # supply that registry's credentials as repository secrets instead.
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # Lowercased by the action: registry paths reject uppercase, and
+          # GitHub owner names may contain it.
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
