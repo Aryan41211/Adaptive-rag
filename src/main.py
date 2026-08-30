@@ -20,6 +20,7 @@ from src.api import ratelimit
 from src.api.auth_routes import router as auth_router
 from src.api.deps import CurrentUser, get_current_user
 from src.api.metrics import metrics_router, request_metrics_middleware
+from src.api.ratelimit import rate_limit_headers
 from src.api.routes import router as rag_router
 from src.core import tracing
 from src.core.config import settings
@@ -127,6 +128,29 @@ async def add_request_id(request: Request, call_next):
 
 
 app.middleware("http")(request_metrics_middleware)
+
+
+_RATE_LIMIT_ROUTES: dict[str, str] = {
+    "/rag/query": "query",
+    "/rag/query/stream": "query",
+    "/rag/documents/upload": "upload",
+}
+
+
+@app.middleware("http")
+async def add_rate_limit_headers(request: Request, call_next):
+    """Attach X-RateLimit-* headers to responses from rate-limited endpoints."""
+    response = await call_next(request)
+    endpoint = _RATE_LIMIT_ROUTES.get(request.url.path)
+    if endpoint is None:
+        return response
+    user = getattr(request.state, "user", None)
+    if user is None:
+        return response
+    headers = await rate_limit_headers(user.user_id, endpoint)
+    for k, v in headers.items():
+        response.headers[k] = v
+    return response
 
 
 @app.exception_handler(AdaptiveRagError)

@@ -132,8 +132,6 @@ async def rag_query_stream(
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            # Tells nginx-style proxies not to buffer, which would defeat
-            # streaming entirely.
             "X-Accel-Buffering": "no",
         },
     )

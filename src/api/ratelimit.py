@@ -39,6 +39,33 @@ class Quota:
     scope: str
 
 
+async def _get_counter(key: str, window_start: int) -> int:
+    """
+    Read the current counter value without incrementing.
+
+    Args:
+        key: Bucket identity, unique per (scope, caller).
+        window_start: Epoch second the current window began.
+
+    Returns:
+        The number of requests seen in this window so far (excluding this one).
+    """
+    database = get_database()
+    bucket = f"{key}:{window_start}"
+
+    if database is None:
+        seen_window, count = _memory_counters.get(bucket, (window_start, 0))
+        return count if seen_window == window_start else 0
+
+    try:
+        document = await database[COLLECTION_NAME].find_one({"_id": bucket})
+        if document is None:
+            return 0
+        return int(document["count"])
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 async def _increment(key: str, window_start: int, ttl_seconds: int) -> int:
     """
     Increment a window's counter and return its new value.
@@ -123,6 +150,35 @@ async def enforce(quota: Quota, identity: str) -> None:
         )
 
 
+async def rate_limit_headers(user_id: str, endpoint: str) -> dict[str, str]:
+    """
+    Compute X-RateLimit-* header values for a successful request.
+
+    Args:
+        user_id: The authenticated user.
+        endpoint: One of "query" or "upload".
+
+    Returns:
+        A dict with x-ratelimit-limit, x-ratelimit-remaining, and
+        x-ratelimit-reset.
+    """
+    factory = {"query": query_rate_limit, "upload": upload_rate_limit}.get(endpoint)
+    if factory is None:
+        return {}
+    quota = factory().quota
+    now = int(time.time())
+    window_start = now - (now % quota.window_seconds)
+    key = f"{quota.scope}:{user_id}"
+    count = await _get_counter(key, window_start)
+    remaining = max(0, quota.limit - count)
+    reset = window_start + quota.window_seconds
+    return {
+        "x-ratelimit-limit": str(quota.limit),
+        "x-ratelimit-remaining": str(remaining),
+        "x-ratelimit-reset": str(reset),
+    }
+
+
 def _client_ip(request: Request) -> str:
     """
     Best-effort client address.
@@ -165,9 +221,10 @@ class UserRateLimit(_RateLimit):
     """Limits an authenticated user's requests."""
 
     async def __call__(
-        self, user: CurrentUser = Depends(get_current_user)
+        self, request: Request, user: CurrentUser = Depends(get_current_user)
     ) -> CurrentUser:
         await enforce(self.quota, user.user_id)
+        request.state.user = user
         return user
 
 
