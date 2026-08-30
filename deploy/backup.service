@@ -1,0 +1,13 @@
+[Unit]
+Description=Adaptive RAG backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/adaptive-rag
+ExecStart=/opt/adaptive-rag/deploy/backup.sh /var/backups/adaptive-rag
+Environment=RETAIN=14
+Environment=COMPOSE=docker compose
+StandardOutput=journal
+StandardError=journal
