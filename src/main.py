@@ -19,6 +19,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from src.api import ratelimit
 from src.api.auth_routes import router as auth_router
 from src.api.deps import CurrentUser, get_current_user
+from src.api.metrics import metrics_router
 from src.api.routes import router as rag_router
 from src.core import tracing
 from src.core.config import settings
@@ -178,6 +179,7 @@ tracing.configure_tracing(app)
 
 app.include_router(auth_router)
 app.include_router(rag_router)
+app.include_router(metrics_router)
 
 
 @app.api_route("/", methods=["GET", "HEAD"], tags=["health"])

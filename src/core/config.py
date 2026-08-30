@@ -116,6 +116,9 @@ class Settings(BaseSettings):
     # Keeps a collector outage from stalling shutdown or a request.
     OTEL_EXPORT_TIMEOUT_SECONDS: int = Field(default=5, ge=1, le=60)
 
+    # --- Prometheus -------------------------------------------------------
+    PROMETHEUS_MULTIPROC_DIR: str | None = None
+
     # --- Ops --------------------------------------------------------------
     LOG_LEVEL: str = "INFO"
     APP_VERSION: str = "1.0.0"
