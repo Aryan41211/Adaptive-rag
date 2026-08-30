@@ -6,7 +6,6 @@ The endpoint is unauthenticated — it is only reachable from inside the
 compose network where Prometheus runs.
 """
 
-import os
 import time
 
 from prometheus_client import (
@@ -118,8 +117,5 @@ metrics_router = APIRouter(tags=["metrics"])
 @metrics_router.get("/metrics/prometheus")
 async def prometheus_metrics() -> Response:
     """Expose Prometheus metrics in OpenMetrics text format."""
-    if registry is not None:
-        output = generate_latest(registry)
-    else:
-        output = generate_latest()
+    output = generate_latest(registry) if registry is not None else generate_latest()
     return Response(content=output, media_type=CONTENT_TYPE_LATEST)
