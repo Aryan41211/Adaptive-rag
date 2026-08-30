@@ -19,7 +19,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from src.api import ratelimit
 from src.api.auth_routes import router as auth_router
 from src.api.deps import CurrentUser, get_current_user
-from src.api.metrics import metrics_router
+from src.api.metrics import metrics_router, request_metrics_middleware
 from src.api.routes import router as rag_router
 from src.core import tracing
 from src.core.config import settings
@@ -124,6 +124,9 @@ async def add_request_id(request: Request, call_next):
         request_id_var.reset(token)
     response.headers["X-Request-ID"] = request_id
     return response
+
+
+app.middleware("http")(request_metrics_middleware)
 
 
 @app.exception_handler(AdaptiveRagError)
