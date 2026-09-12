@@ -1022,6 +1022,9 @@ Add cases in `evals/data/golden.yaml`.
 - **Vector Search**: Efficient similarity search with Qdrant
 - **Async Operations**: Non-blocking I/O for better throughput
 - **Caching**: Query results cached when applicable
+- **Embedding query cache**: a turn repeats the same question embedding
+  several times (classifier, retriever, citations); repeated embeddings are
+  served from a bounded in-process cache instead of the provider
 - **Batch Processing**: Document processing in batches
 
 ---
