@@ -43,12 +43,18 @@ def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     Returns:
         The estimated cost, or 0.0 when the model has no known price.
     """
-    for name, (prompt_price, completion_price) in MODEL_PRICES.items():
-        if model.startswith(name):
-            return (
-                input_tokens * prompt_price + output_tokens * completion_price
-            ) / 1_000_000
-    return 0.0
+    best = next(
+        (
+            name
+            for name in sorted(MODEL_PRICES, key=len, reverse=True)
+            if model.startswith(name)
+        ),
+        None,
+    )
+    if best is None:
+        return 0.0
+    prompt_price, completion_price = MODEL_PRICES[best]
+    return (input_tokens * prompt_price + output_tokens * completion_price) / 1_000_000
 
 
 @dataclass

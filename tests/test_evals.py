@@ -373,6 +373,96 @@ async def test_runner_cleans_up_its_scratch_user(monkeypatch, fake_embeddings):
     assert vector_store.has_documents(seen_users[0]) is False
 
 
+async def test_runner_captures_usage_from_the_pipeline(monkeypatch, fake_embeddings):
+    """The runner must attach the usage tracker and report measured tokens."""
+    from types import SimpleNamespace
+
+    from src.core.usage import UsageTracker
+
+    data = Dataset(
+        documents=[Document(filename="doc.txt", description="d", content="text")],
+        cases=[_case(id="a", must_include=["x"])],
+    )
+
+    class _Builder:
+        async def ainvoke(self, state, config=None):
+            trackers = [
+                callback
+                for callback in (config or {}).get("callbacks") or []
+                if isinstance(callback, UsageTracker)
+            ]
+            assert trackers, "run_case did not attach the usage tracker"
+            trackers[0].on_llm_end(
+                SimpleNamespace(
+                    llm_output={
+                        "model_name": "gpt-4o",
+                        "token_usage": {
+                            "prompt_tokens": 1000,
+                            "completion_tokens": 500,
+                        },
+                    },
+                    generations=[],
+                )
+            )
+            from langchain_core.messages import AIMessage
+
+            return {"messages": [AIMessage(content="x")], "route": "index"}
+
+    import src.rag.graph_builder as graph_builder
+
+    monkeypatch.setattr(graph_builder, "builder", _Builder())
+
+    results, summary = await runner.run(data)
+
+    assert summary.total_tokens == 1500
+    assert summary.cost_usd == pytest.approx(0.0075)
+    assert results[0].usage["total_tokens"] == 1500
+
+
+async def test_failed_case_records_no_usage(monkeypatch, fake_embeddings):
+    """A case that errors must not fabricate token counts in the summary."""
+    from types import SimpleNamespace
+
+    from src.core.usage import UsageTracker
+
+    data = Dataset(
+        documents=[Document(filename="doc.txt", description="d", content="text")],
+        cases=[_case(id="a")],
+    )
+
+    class _Builder:
+        async def ainvoke(self, state, config=None):
+            trackers = [
+                callback
+                for callback in (config or {}).get("callbacks") or []
+                if isinstance(callback, UsageTracker)
+            ]
+            if trackers:
+                trackers[0].on_llm_end(
+                    SimpleNamespace(
+                        llm_output={
+                            "model_name": "gpt-4o",
+                            "token_usage": {
+                                "prompt_tokens": 10,
+                                "completion_tokens": 5,
+                            },
+                        },
+                        generations=[],
+                    )
+                )
+            raise RuntimeError("provider exploded")
+
+    import src.rag.graph_builder as graph_builder
+
+    monkeypatch.setattr(graph_builder, "builder", _Builder())
+
+    results, summary = await runner.run(data)
+
+    assert results[0].error
+    assert summary.total_tokens == 0
+    assert results[0].usage.get("total_tokens", 0) == 0
+
+
 async def test_runner_reports_progress(monkeypatch, fake_embeddings):
     data = Dataset(
         documents=[Document(filename="doc.txt", description="d", content="text")],

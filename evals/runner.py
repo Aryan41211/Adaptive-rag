@@ -66,17 +66,19 @@ async def run_case(case: Case, user_id: str) -> CaseResult:
     Returns:
         The scored result.
     """
+    from src.core.usage import UsageTracker
     from src.rag.graph_builder import builder
 
     result = CaseResult(case_id=case.id, question=case.question, answer="", route="")
 
+    tracker = UsageTracker()
     try:
         state = await builder.ainvoke(
             {
                 "messages": [HumanMessage(content=case.question)],
                 "user_id": user_id,
             },
-            config={"recursion_limit": 25},
+            config={"recursion_limit": 25, "callbacks": [tracker]},
         )
     except Exception as exc:  # noqa: BLE001 - a failure is a result, not a stop
         result.error = f"{type(exc).__name__}: {exc}"
@@ -86,6 +88,7 @@ async def run_case(case: Case, user_id: str) -> CaseResult:
     result.answer = str(messages[-1].content) if messages else ""
     result.route = str(state.get("route") or "")
     result.citations = list(state.get("citations") or [])
+    result.usage = tracker.finish().as_dict()
     return score(case, result)
 
 

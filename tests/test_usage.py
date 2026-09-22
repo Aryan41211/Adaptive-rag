@@ -45,6 +45,22 @@ def test_versioned_model_names_match_their_family():
     assert estimate_cost("gpt-4o-2024-11-20", 1_000_000, 0) == pytest.approx(2.50)
 
 
+def test_mini_model_uses_its_own_price_entry():
+    """A mini model must not be shadowed by its parent prefix."""
+    assert estimate_cost("gpt-4o-mini", 1_000_000, 0) == pytest.approx(0.15)
+    assert estimate_cost("gpt-4o-mini", 0, 1_000_000) == pytest.approx(0.60)
+
+
+def test_mini_41_model_uses_its_own_price_entry():
+    assert estimate_cost("gpt-4.1-mini", 1_000_000, 0) == pytest.approx(0.40)
+    assert estimate_cost("gpt-4.1-mini", 0, 1_000_000) == pytest.approx(1.60)
+
+
+def test_parent_models_keep_their_own_prices():
+    assert estimate_cost("gpt-4.1", 1_000_000, 0) == pytest.approx(2.00)
+    assert estimate_cost("gpt-4.1", 0, 1_000_000) == pytest.approx(8.00)
+
+
 def test_unknown_model_reports_zero_rather_than_guessing():
     assert estimate_cost("some-future-model", 1_000_000, 1_000_000) == 0.0
 
