@@ -195,6 +195,7 @@ def test_one_user_cannot_delete_anothers_documents(client):
 # --- account deletion ------------------------------------------------------
 async def test_account_deletion_removes_everything(client, auth_headers, monkeypatch):
     import src.api.routes as routes
+    from src.db import users as user_store
     from src.memory.chat_history_mongo import ChatHistory
 
     async def fake_run_query(user_id, messages):
@@ -203,6 +204,10 @@ async def test_account_deletion_removes_everything(client, auth_headers, monkeyp
     monkeypatch.setattr(routes, "run_query", fake_run_query)
 
     _upload(client, auth_headers, "private.txt")
+    (user_id,) = (u["user_id"] for u in user_store._memory_users.values())
+    assert [d["filename"] for d in vector_store.list_documents(user_id)] == [
+        "private.txt"
+    ]
     client.post(
         "/rag/query",
         json={"query": "something personal", "session_id": "s1"},
@@ -211,6 +216,9 @@ async def test_account_deletion_removes_everything(client, auth_headers, monkeyp
 
     response = client.delete("/auth/me", headers=auth_headers)
     assert response.status_code == 204
+
+    # The vector index is purged, not just the account record.
+    assert vector_store.list_documents(user_id) == []
 
     # The token is revoked along with the account.
     assert client.get("/rag/documents", headers=auth_headers).status_code == 401
