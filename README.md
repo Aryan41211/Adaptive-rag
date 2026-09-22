@@ -480,7 +480,7 @@ supplied), which also appears in the matching log lines.
 | Requirement | Needed? | Notes |
 |---|---|---|
 | Python 3.10+ | **Required** | Developed and tested on 3.12 |
-| OpenAI API key | **Required** | Chat completions and embeddings |
+| OpenAI API key | Optional | Chat and embeddings via the OpenAI provider (the default). The fully local mode uses Ollama instead and needs no key |
 | Qdrant | Recommended | Persistent, shared document storage. Without it an in-process FAISS index is used: documents are lost on restart and the API must run a single worker |
 | MongoDB | Recommended | Durable users and chat history. Without it both are kept in memory, lost on restart, and not shared between workers |
 | Tavily API key | Optional | Enables the web-search route; without it those queries fall back to general knowledge |
@@ -533,6 +533,49 @@ Everything else is optional and documented inline in `.env.example`.
 Configuration is validated at startup, so a missing or placeholder value
 fails immediately with a clear message rather than surfacing later as an
 opaque provider error.
+
+### 3b. Free local setup with Ollama (no API key)
+
+Everything above runs against OpenAI. The app also ships a fully local mode
+where chat and embeddings are served by a local [Ollama](https://ollama.com)
+server, so the whole system works with **no API key and no cost**:
+
+```bash
+# 1. Install Ollama (https://ollama.com/download) and pull two models:
+ollama pull qwen2.5:7b          # chat
+ollama pull nomic-embed-text    # embeddings (274 MB)
+
+# 2. Point `.env` at the local server:
+LLM_PROVIDER=ollama
+EMBEDDING_PROVIDER=ollama
+OLLAMA_MODEL=qwen2.5:7b
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+```
+
+Leave `OPENAI_API_KEY` empty. The key is validated only when an OpenAI
+provider is selected. Start the app and the eval harness exactly as usual,
+and both run locally for free:
+
+```bash
+python -m uvicorn src.main:app --host 0.0.0.0 --port 8000
+python -m evals --json artifacts/evals/local.json   # free local evaluation
+```
+
+The Ollama providers also degrade cleanly: if the local server is stopped,
+`/rag/query` returns `502` with a clear message instead of masking it as an
+internal error. Note that evaluation is only as good as the chat model uses:
+small local models are weaker at routing and fact recall than OpenAI's
+flagships, so a *local* eval score is not comparable to a *paid* one.
+
+The Compose stack can run a bundled Ollama sidecar instead:
+
+```bash
+docker compose --profile ollama up -d api ui
+```
+
+`docker-compose.yml` passes `LLM_PROVIDER`, `EMBEDDING_PROVIDER` and
+`OLLAMA_*` through to the containers and mounts an `ollama_data` volume so
+pulled models survive restarts.
 
 ### 4. Running the Application
 
@@ -990,8 +1033,10 @@ Scoring is deterministic — there is no LLM judge, which would make the score
 depend on a second model and cost money on every run. The trade-off is that it
 measures whether the right facts are present, not whether the prose is good.
 
-**This calls the model provider and costs money**, so it is not part of the
-test suite or CI. The harness itself is covered by `tests/test_evals.py`.
+Against the OpenAI provider **this calls the model provider and costs
+money**, so it is not part of the test suite or CI. With Ollama
+(`EMBEDDING_PROVIDER=ollama LLM_PROVIDER=ollama`) the same runs are fully
+local and free. The harness itself is covered by `tests/test_evals.py`.
 
 Add cases in `evals/data/golden.yaml`.
 
@@ -1170,13 +1215,17 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
   recover cycle
 - ✅ **Optional OpenTelemetry tracing**, annotated with route, tokens and cost
 - ✅ CI: lint, tests on two Python versions, and a Docker build smoke test
-- ✅ Automated test suite (454 tests, 94% coverage of `src/`)
+- ✅ **Fully local mode** — chat and embeddings via Ollama with no API key,
+  including a keyless Compose profile with a bundled Ollama sidecar
+- ✅ Automated test suite (478 tests, 94% coverage of `src/`)
 
 ### Not yet done
 
-- ❌ **No end-to-end run against a live model provider** — every test uses a
-  fake. The pipeline is verified structurally, not by a real answer, and the
-  evaluation harness has never been run for score
+- ❌ **No paid OpenAI evaluation** — credits are exhausted, so the harness has
+  never been scored against OpenAI's models. A local Ollama eval run reaches
+  the real providers and the free CLI banner correctly, but this machine's
+  6 GB GPU cannot host the recommended 8 GB chat model, so no local score was
+  recorded either
 - ❌ Backups are not scheduled for you; the script is provided, the cron
   entry and retention policy are not
 
