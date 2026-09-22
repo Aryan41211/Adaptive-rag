@@ -85,6 +85,7 @@ httpx[http2]==0.28.1
     # via
     #   langgraph-sdk
     #   langsmith
+    #   ollama
     #   openai
     #   qdrant-client
     #   tavily-python
@@ -125,12 +126,15 @@ langchain-core==0.3.72
     #   -r requirements.txt
     #   langchain
     #   langchain-community
+    #   langchain-ollama
     #   langchain-openai
     #   langchain-qdrant
     #   langchain-text-splitters
     #   langgraph
     #   langgraph-checkpoint
     #   langgraph-prebuilt
+langchain-ollama==0.3.5
+    # via -r requirements.txt
 langchain-openai==0.3.28
     # via -r requirements.txt
 langchain-qdrant==0.2.1
@@ -176,6 +180,8 @@ numpy==2.5.2
     #   pydeck
     #   qdrant-client
     #   streamlit
+ollama==0.6.2
+    # via langchain-ollama
 openai==1.109.1
     # via langchain-openai
 orjson==3.12.0
@@ -219,6 +225,7 @@ pydantic==2.13.4
     #   langchain-qdrant
     #   langgraph
     #   langsmith
+    #   ollama
     #   openai
     #   pydantic-settings
     #   qdrant-client

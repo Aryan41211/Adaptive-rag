@@ -14,7 +14,7 @@ from langchain_core.prompts import PromptTemplate
 from src.config.settings import Config
 from src.core.config import settings
 from src.core.logger import get_logger
-from src.llms.openai import get_llm
+from src.llms.provider import get_llm
 from src.models.state import State
 from src.models.verification_result import VerificationResult
 

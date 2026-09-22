@@ -3,7 +3,7 @@ Helper tools for document description handling.
 """
 
 from src.core.logger import get_logger
-from src.llms.openai import get_llm
+from src.llms.provider import get_llm
 
 logger = get_logger(__name__)
 
