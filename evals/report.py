@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from evals.metrics import CaseResult, Summary
+from src.core.config import settings
 
 
 def _status(result: CaseResult) -> str:
@@ -52,7 +53,17 @@ def render_text(results: list[CaseResult], summary: Summary) -> str:
     Returns:
         The report text.
     """
-    lines = ["", "=" * 72, "RAG EVALUATION", "=" * 72, ""]
+    lines = [
+        "",
+        "=" * 72,
+        "RAG EVALUATION",
+        "=" * 72,
+        "",
+        f"  LLM provider       {settings.LLM_PROVIDER} ({settings.chat_model_name})",
+        f"  Embeddings         {settings.EMBEDDING_PROVIDER} "
+        f"({settings.embedding_model_name})",
+        "",
+    ]
 
     width = max((len(r.case_id) for r in results), default=8)
     for result in results:
@@ -75,8 +86,9 @@ def render_text(results: list[CaseResult], summary: Summary) -> str:
         f"  (over {metrics['answered']} answered cases)",
         f"  Fabrications       {metrics['hallucinated']}",
         f"  Errors             {metrics['errors']}",
-        f"  Tokens             {metrics['total_tokens']:,}"
-        f"  (~${metrics['cost_usd']:.4f})",
+        f"  Tokens             {metrics['total_tokens']:,}",
+        f"  Cost               ${metrics['cost_usd']:.4f}"
+        + ("  (local, free)" if settings.free_local_mode else ""),
         "-" * 72,
         "",
     ]
@@ -96,6 +108,12 @@ def write_json(results: list[CaseResult], summary: Summary, path: Path | str) ->
         The path written.
     """
     payload = {
+        "provider": {
+            "llm_provider": settings.LLM_PROVIDER,
+            "chat_model": settings.chat_model_name,
+            "embedding_provider": settings.EMBEDDING_PROVIDER,
+            "embedding_model": settings.embedding_model_name,
+        },
         "summary": summary.as_dict(),
         "cases": [
             {

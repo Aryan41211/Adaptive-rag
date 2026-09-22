@@ -5,8 +5,9 @@ Indexes the dataset's documents into a scratch user, runs every case through
 the real pipeline, and scores the results. The scratch user is removed
 afterwards, so a run never touches real user data.
 
-Running this costs money: every case makes several model calls. It is not part
-of the test suite for that reason, and is invoked deliberately.
+A run makes several model calls per case. With the default OpenAI provider it
+costs money; with the Ollama providers it runs locally and free. It is
+deliberately not part of the test suite, and is invoked explicitly.
 """
 
 import uuid

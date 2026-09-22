@@ -5,8 +5,10 @@ Evaluation CLI.
     python -m evals --json out.json     # also write machine-readable output
     python -m evals --fail-under 0.8    # non-zero exit below that pass rate
 
-This calls the real model provider and costs money. It is deliberately not
-part of the test suite.
+This calls the configured model provider. With the default OpenAI provider it
+costs money and is deliberately not part of the test suite; with
+``LLM_PROVIDER=ollama`` / ``EMBEDDING_PROVIDER=ollama`` it runs fully locally
+and costs nothing.
 """
 
 import argparse
@@ -17,6 +19,7 @@ from pathlib import Path
 from evals import dataset as dataset_module
 from evals import report, runner
 from evals.metrics import CaseResult
+from src.core.config import settings
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -56,7 +59,14 @@ async def _run(args: argparse.Namespace) -> int:
 
     print(
         f"Running {len(data)} cases over {len(data.documents)} documents.\n"
-        "This calls the model provider and will incur cost.\n"
+        f"Provider: {settings.LLM_PROVIDER} ({settings.chat_model_name}) with "
+        f"{settings.EMBEDDING_PROVIDER} embeddings "
+        f"({settings.embedding_model_name}).\n"
+        + (
+            "This runs fully locally through Ollama and costs nothing.\n"
+            if settings.free_local_mode
+            else "This calls the OpenAI models and will incur API cost.\n"
+        )
     )
 
     def progress(result: CaseResult) -> None:
