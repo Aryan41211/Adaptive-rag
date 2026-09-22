@@ -1,0 +1,23 @@
+# Keeps the Python dependencies, the base images and the pinned GitHub
+# Actions versions patched. The publish job only runs for commits that
+# passed the lock-file and lint gates, so an updated lock file from this
+# bot triggers a full re-verification before it can be published.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      all-dependencies:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
