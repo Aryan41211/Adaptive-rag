@@ -1,0 +1,215 @@
+{
+  "provider": {
+    "llm_provider": "ollama",
+    "chat_model": "gemma3:12b",
+    "embedding_provider": "ollama",
+    "embedding_model": "nomic-embed-text"
+  },
+  "summary": {
+    "total": 14,
+    "answered": 0,
+    "passed": 0,
+    "errors": 14,
+    "pass_rate": 0.0,
+    "routing_accuracy": 0.0,
+    "retrieval_accuracy": 0.0,
+    "fact_accuracy": 0.0,
+    "hallucinated": 0,
+    "total_tokens": 0,
+    "cost_usd": 0.0
+  },
+  "cases": [
+    {
+      "id": "kestrel-altitude",
+      "question": "What altitude does Kestrel-7 orbit at?",
+      "status": "ERROR",
+      "route": "",
+      "answer": "",
+      "citations": [],
+      "facts_found": [],
+      "facts_missing": [
+        "812"
+      ],
+      "fabricated": [],
+      "error": "ResponseError: llama-server startup failed after projector CPU offload retry: llama-server process has terminated: exit status 1: cudaMalloc failed: out of memory\nalloc_tensor_range: failed to allocate CUDA0 buffer of size 2864859136\nerror loading model: unable to allocate CUDA0 buffer (status code: 500)"
+    },
+    {
+      "id": "kestrel-instruments",
+      "question": "Which instruments does Kestrel-7 carry?",
+      "status": "ERROR",
+      "route": "",
+      "answer": "",
+      "citations": [],
+      "facts_found": [],
+      "facts_missing": [
+        "Marlowe",
+        "Ashby"
+      ],
+      "fabricated": [],
+      "error": "ResponseError: do embedding request: Post \"http://127.0.0.1:55492/v1/embeddings\": read tcp 127.0.0.1:55512->127.0.0.1:55492: wsarecv: An existing connection was forcibly closed by the remote host. (status code: 400)"
+    },
+    {
+      "id": "kestrel-director",
+      "question": "Who is the mission director of the Kestrel programme?",
+      "status": "ERROR",
+      "route": "",
+      "answer": "",
+      "citations": [],
+      "facts_found": [],
+      "facts_missing": [
+        "Petrosyan"
+      ],
+      "fabricated": [],
+      "error": "ResponseError: llama-server startup failed after projector CPU offload retry: llama-server process has terminated: exit status 1: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 5250883584\nalloc_tensor_range: failed to allocate CUDA_Host buffer of size 5250883584\nerror loading model: unable to allocate CUDA_Host buffer (status code: 500)"
+    },
+    {
+      "id": "kestrel-spectrometer-band",
+      "question": "What wavelength band does the Marlowe spectrometer operate in?",
+      "status": "ERROR",
+      "route": "",
+      "answer": "",
+      "citations": [],
+      "facts_found": [],
+      "facts_missing": [
+        "240",
+        "390"
+      ],
+      "fabricated": [],
+      "error": "ResponseError: llama-server startup failed after projector CPU offload retry: llama-server process has terminated: exit status 1: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 5250883584\nalloc_tensor_range: failed to allocate CUDA_Host buffer of size 5250883584\nerror loading model: unable to allocate CUDA_Host buffer (status code: 500)"
+    },
+    {
+      "id": "handbook-leave",
+      "question": "How many days of annual leave do full-time employees get?",
+      "status": "ERROR",
+      "route": "",
+      "answer": "",
+      "citations": [],
+      "facts_found": [],
+      "facts_missing": [
+        "26"
+      ],
+      "fabricated": [],
+      "error": "ResponseError: llama-server startup failed after projector CPU offload retry: llama-server process has terminated: exit status 1: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 5250883584\nalloc_tensor_range: failed to allocate CUDA_Host buffer of size 5250883584\nerror loading model: unable to allocate CUDA_Host buffer (status code: 500)"
+    },
+    {
+      "id": "handbook-expenses-deadline",
+      "question": "How long do I have to submit an expense claim?",
+      "status": "ERROR",
+      "route": "",
+      "answer": "",
+      "citations": [],
+      "facts_found": [],
+      "facts_missing": [
+        "60"
+      ],
+      "fabricated": [],
+      "error": "ResponseError: llama-server startup failed after projector CPU offload retry: llama-server process has terminated: exit status 1: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 5250883584\nalloc_tensor_range: failed to allocate CUDA_Host buffer of size 5250883584\nerror loading model: unable to allocate CUDA_Host buffer (status code: 500)"
+    },
+    {
+      "id": "handbook-remote-days",
+      "question": "How many days a week can I work from home?",
+      "status": "ERROR",
+      "route": "",
+      "answer": "",
+      "citations": [],
+      "facts_found": [],
+      "facts_missing": [
+        "3"
+      ],
+      "fabricated": [],
+      "error": "ResponseError: llama-server startup failed after projector CPU offload retry: llama-server process has terminated: exit status 1: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 5250883584\nalloc_tensor_range: failed to allocate CUDA_Host buffer of size 5250883584\nerror loading model: unable to allocate CUDA_Host buffer (status code: 500)"
+    },
+    {
+      "id": "handbook-probation",
+      "question": "What is the probationary period for new starters?",
+      "status": "ERROR",
+      "route": "",
+      "answer": "",
+      "citations": [],
+      "facts_found": [],
+      "facts_missing": [
+        "4"
+      ],
+      "fabricated": [],
+      "error": "ResponseError: llama-server startup failed after projector CPU offload retry: llama-server reported out-of-memory during startup: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 5250883584\nalloc_tensor_range: failed to allocate CUDA_Host buffer of size 5250883584\nerror loading model: unable to allocate CUDA_Host buffer (status code: 500)"
+    },
+    {
+      "id": "cross-document-leave-not-orbit",
+      "question": "What is the carry-over limit for unused annual leave?",
+      "status": "ERROR",
+      "route": "",
+      "answer": "",
+      "citations": [],
+      "facts_found": [],
+      "facts_missing": [
+        "5"
+      ],
+      "fabricated": [],
+      "error": "ResponseError: llama-server startup failed before projector CPU offload retry: llama-server reported out-of-memory during startup: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 5250883584\nalloc_tensor_range: failed to allocate CUDA_Host buffer of size 5250883584\nerror loading model: unable to allocate CUDA_Host buffer; error stopping failed process: TerminateProcess: Access is denied. (status code: 500)"
+    },
+    {
+      "id": "unanswerable-launch-cost",
+      "question": "How much did the Kestrel-7 launch cost in US dollars?",
+      "status": "ERROR",
+      "route": "",
+      "answer": "",
+      "citations": [],
+      "facts_found": [],
+      "facts_missing": [],
+      "fabricated": [],
+      "error": "ResponseError: llama-server startup failed after projector CPU offload retry: llama-server process has terminated: exit status 1: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 5250883584\nalloc_tensor_range: failed to allocate CUDA_Host buffer of size 5250883584\nerror loading model: unable to allocate CUDA_Host buffer (status code: 500)"
+    },
+    {
+      "id": "unanswerable-pension",
+      "question": "What is the company pension contribution rate?",
+      "status": "ERROR",
+      "route": "",
+      "answer": "",
+      "citations": [],
+      "facts_found": [],
+      "facts_missing": [],
+      "fabricated": [],
+      "error": "ResponseError: llama-server startup failed after projector CPU offload retry: llama-server reported out-of-memory during startup: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 5250883584\nalloc_tensor_range: failed to allocate CUDA_Host buffer of size 5250883584\nerror loading model: unable to allocate CUDA_Host buffer (status code: 500)"
+    },
+    {
+      "id": "general-arithmetic",
+      "question": "What is 17 multiplied by 4?",
+      "status": "ERROR",
+      "route": "",
+      "answer": "",
+      "citations": [],
+      "facts_found": [],
+      "facts_missing": [
+        "68"
+      ],
+      "fabricated": [],
+      "error": "ResponseError: llama-server startup failed after projector CPU offload retry: llama-server process has terminated: exit status 1: cudaMalloc failed: out of memory\nalloc_tensor_range: failed to allocate CUDA0 buffer of size 2864859136\nerror loading model: unable to allocate CUDA0 buffer (status code: 500)"
+    },
+    {
+      "id": "general-capital",
+      "question": "What is the capital city of Australia?",
+      "status": "ERROR",
+      "route": "",
+      "answer": "",
+      "citations": [],
+      "facts_found": [],
+      "facts_missing": [
+        "Canberra"
+      ],
+      "fabricated": [],
+      "error": "ResponseError: llama-server startup failed after projector CPU offload retry: llama-server process has terminated: exit status 1: cudaMalloc failed: out of memory\nalloc_tensor_range: failed to allocate CUDA0 buffer of size 2864859136\nerror loading model: unable to allocate CUDA0 buffer (status code: 500)"
+    },
+    {
+      "id": "general-greeting",
+      "question": "Hello, what can you help me with?",
+      "status": "ERROR",
+      "route": "",
+      "answer": "",
+      "citations": [],
+      "facts_found": [],
+      "facts_missing": [],
+      "fabricated": [],
+      "error": "ResponseError: llama-server startup failed after projector CPU offload retry: llama-server process has terminated: exit status 1: ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 5250883584\nalloc_tensor_range: failed to allocate CUDA_Host buffer of size 5250883584\nerror loading model: unable to allocate CUDA_Host buffer (status code: 500)"
+    }
+  ]
+}
