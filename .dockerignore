@@ -14,6 +14,7 @@ tests/
 .env
 .env.local
 data/
+backups/
 description.txt
 *.md
 !README.md
