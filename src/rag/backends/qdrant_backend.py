@@ -31,7 +31,7 @@ from qdrant_client import QdrantClient, models
 
 from src.core.config import settings
 from src.core.logger import get_logger
-from src.llms.openai import get_embeddings
+from src.llms.provider import get_embeddings
 from src.rag.backends.base import DEFAULT_DESCRIPTION, VectorStoreBackend
 
 logger = get_logger(__name__)
@@ -178,6 +178,22 @@ class QdrantBackend(VectorStoreBackend):
         if not chunks:
             raise ValueError("No content could be extracted from the document.")
 
+        # Vectors from different embedding models are not comparable, so a
+        # user whose index was built with one model must not silently receive
+        # chunks embedded with another. The check happens before any write.
+        embedding_model = settings.embedding_model_name
+        meta = self._read_meta(user_id)
+        stored_model = meta.get("embedding_model")
+        if stored_model and stored_model != embedding_model:
+            raise ValueError(
+                "This user's existing index was built with embedding model "
+                f"'{stored_model}', but the service now uses "
+                f"'{embedding_model}'. Vectors from different models are not "
+                "comparable: delete and re-upload the documents, or point "
+                "QDRANT_COLLECTION at a fresh collection before changing the "
+                "embedding model."
+            )
+
         store = self._get_store()
 
         # The owner tag is what every later search filters on.
@@ -187,13 +203,19 @@ class QdrantBackend(VectorStoreBackend):
 
         store.add_documents(chunks)
 
-        meta = self._read_meta(user_id)
         descriptions = list(meta.get("descriptions") or [])
         if description and description not in descriptions:
             descriptions.append(description)
 
         total = self._count(user_id)
-        self._write_meta(user_id, {"descriptions": descriptions, "chunk_count": total})
+        self._write_meta(
+            user_id,
+            {
+                "descriptions": descriptions,
+                "chunk_count": total,
+                "embedding_model": embedding_model,
+            },
+        )
 
         logger.info("Indexed %d chunks in Qdrant (total=%d)", len(chunks), total)
         return total
@@ -287,6 +309,10 @@ class QdrantBackend(VectorStoreBackend):
                 {
                     "descriptions": meta.get("descriptions") or [],
                     "chunk_count": self._count(user_id),
+                    # Re-recorded so the guard in add_documents survives a
+                    # delete between two uploads.
+                    "embedding_model": meta.get("embedding_model")
+                    or settings.embedding_model_name,
                 },
             )
             logger.info("Deleted %d chunks for '%s'", removed, filename)

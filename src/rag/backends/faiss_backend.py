@@ -15,7 +15,7 @@ from langchain_core.vectorstores import VectorStoreRetriever
 
 from src.core.config import settings
 from src.core.logger import get_logger
-from src.llms.openai import get_embeddings
+from src.llms.provider import get_embeddings
 from src.rag.backends.base import DEFAULT_DESCRIPTION, VectorStoreBackend
 
 logger = get_logger(__name__)
@@ -29,6 +29,7 @@ class UserIndex:
     descriptions: list[str] = field(default_factory=list)
     chunk_count: int = 0
     version: int = 1
+    embedding_model: str = ""
 
     @property
     def description(self) -> str:
@@ -55,6 +56,7 @@ class FaissBackend(VectorStoreBackend):
             raise ValueError("No content could be extracted from the document.")
 
         embeddings = get_embeddings()
+        embedding_model = settings.embedding_model_name
 
         with self._lock:
             index = self._indexes.get(user_id)
@@ -66,9 +68,19 @@ class FaissBackend(VectorStoreBackend):
                     descriptions=[description],
                     chunk_count=len(chunks),
                     version=1,
+                    embedding_model=embedding_model,
                 )
                 self._indexes[user_id] = index
             else:
+                if index.embedding_model != embedding_model:
+                    raise ValueError(
+                        "This user's existing index was built with embedding "
+                        f"model '{index.embedding_model}', but the service now "
+                        f"uses '{embedding_model}'. Vectors from different "
+                        "models are not comparable: delete and re-upload the "
+                        "documents, or move to a fresh vector store before "
+                        "changing the embedding model."
+                    )
                 index.vectorstore.add_documents(chunks)
                 if description and description not in index.descriptions:
                     index.descriptions.append(description)
