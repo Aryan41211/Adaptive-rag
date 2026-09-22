@@ -54,9 +54,7 @@ def test_construction_never_reaches_the_network(monkeypatch):
 
 def test_cached_embeddings_is_a_real_embeddings_object():
     """Vector stores only accept Embeddings instances or callables."""
-    from langchain_core.embeddings import Embeddings
-
-    from langchain_core.embeddings import DeterministicFakeEmbedding
+    from langchain_core.embeddings import DeterministicFakeEmbedding, Embeddings
 
     cached = provider.CachedEmbeddings(DeterministicFakeEmbedding(size=8))
     assert isinstance(cached, Embeddings)
