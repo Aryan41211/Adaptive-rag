@@ -31,7 +31,14 @@ LOCK = ROOT / "requirements.lock.txt"
 
 
 def canonical(name: str) -> str:
-    """Normalise a distribution name for comparison (PEP 503)."""
+    """Normalise a distribution name for comparison (PEP 503).
+
+    Extras (``name[extra]``) are not part of the distribution name: the lock
+    file pins a requirement with extras verbatim (``uvicorn[standard]==0.39.0``)
+    while ``packaging.Requirement.name`` never carries them, so both sides must
+    strip them or one package is reported as two.
+    """
+    name = re.sub(r"\[.*?\]", "", name)
     return re.sub(r"[-_.]+", "-", name).strip().lower()
 
 
