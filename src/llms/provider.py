@@ -18,10 +18,12 @@ import threading
 from collections import OrderedDict
 from functools import lru_cache
 
+from langchain_core.embeddings import Embeddings
+
 from src.core.config import settings
 
 
-class CachedEmbeddings:
+class CachedEmbeddings(Embeddings):
     """
     Bounded LRU cache around ``embed_query``.
 
