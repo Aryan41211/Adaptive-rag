@@ -27,7 +27,7 @@ from src.config.settings import Config
 from src.core import tracing
 from src.core.config import settings
 from src.core.logger import get_logger
-from src.llms.openai import get_answer_llm, get_llm
+from src.llms.provider import get_answer_llm, get_llm
 from src.models.grade import Grade
 from src.models.route_identifier import RouteIdentifier
 from src.models.state import State
@@ -444,6 +444,7 @@ async def run_query(user_id: str, messages: list) -> tuple[str, list[dict], dict
     Raises:
         RetrievalError: If the graph fails or produces no answer.
     """
+    import httpx
     from langgraph.errors import GraphRecursionError
     from openai import OpenAIError
 
@@ -466,10 +467,16 @@ async def run_query(user_id: str, messages: list) -> tuple[str, list[dict], dict
             "The assistant could not converge on an answer. Please rephrase "
             "your question."
         ) from exc
-    except OpenAIError as exc:
+    except (OpenAIError, httpx.HTTPError) as exc:
         tracker.finish()
         # An upstream provider failure is a 502, not an internal 500.
         logger.error("Model provider call failed: %s", exc)
+        raise RetrievalError(
+            "The language model service is unavailable. Please try again."
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - any model-provider escape is upstream
+        tracker.finish()
+        logger.exception("Graph turn failed: %s", exc)
         raise RetrievalError(
             "The language model service is unavailable. Please try again."
         ) from exc
@@ -524,6 +531,7 @@ async def stream_query(user_id: str, messages: list) -> AsyncIterator[dict]:
     Yields:
         Event dictionaries in the order above.
     """
+    import httpx
     from langgraph.errors import GraphRecursionError
     from openai import OpenAIError
 
@@ -572,7 +580,7 @@ async def stream_query(user_id: str, messages: list) -> AsyncIterator[dict]:
             "Please rephrase your question.",
         }
         return
-    except OpenAIError as exc:
+    except (OpenAIError, httpx.HTTPError) as exc:
         tracker.finish()
         logger.error("Model provider call failed: %s", exc)
         yield {
