@@ -43,9 +43,49 @@ def test_empty_openai_key_is_rejected():
 
 
 def test_placeholder_openai_key_is_rejected():
-    """A copied-but-unedited .env must not boot."""
+    """A copied-but-unedited .env must not boot when OpenAI is selected."""
     with pytest.raises(ValidationError):
         _settings(OPENAI_API_KEY="sk-your-openai-key-here")
+
+
+# --- provider selection -----------------------------------------------------
+def test_providers_default_to_openai():
+    settings = _settings()
+    assert settings.LLM_PROVIDER == "openai"
+    assert settings.EMBEDDING_PROVIDER == "openai"
+    assert settings.free_local_mode is False
+
+
+def test_ollama_providers_allow_an_empty_api_key():
+    """Free local mode must not demand an OpenAI key."""
+    settings = _settings(
+        OPENAI_API_KEY="", LLM_PROVIDER="ollama", EMBEDDING_PROVIDER="ollama"
+    )
+    assert settings.free_local_mode is True
+    assert settings.OPENAI_API_KEY == ""
+
+
+def test_ollama_settings_have_defaults():
+    settings = _settings()
+    assert settings.OLLAMA_BASE_URL == "http://localhost:11434"
+    assert settings.OLLAMA_MODEL == "qwen2.5:7b"
+    assert settings.OLLAMA_EMBEDDING_MODEL == "nomic-embed-text"
+
+
+@pytest.mark.parametrize("field", ["LLM_PROVIDER", "EMBEDDING_PROVIDER"])
+def test_unknown_provider_is_rejected(field):
+    with pytest.raises(ValidationError):
+        _settings(**{field: "anthropic"})
+
+
+def test_active_model_names_follow_the_provider():
+    openai = _settings()
+    assert openai.chat_model_name == "gpt-4o"
+    assert openai.embedding_model_name == "text-embedding-3-small"
+
+    ollama = _settings(LLM_PROVIDER="ollama", EMBEDDING_PROVIDER="ollama")
+    assert ollama.chat_model_name == "qwen2.5:7b"
+    assert ollama.embedding_model_name == "nomic-embed-text"
 
 
 def test_placeholder_jwt_secret_is_rejected():

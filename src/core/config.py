@@ -5,13 +5,19 @@ Settings are loaded from a secrets directory, the environment, and a local
 `.env` file, and validated at import time so that a misconfigured deployment
 fails fast and loudly, instead of surfacing as an opaque 401 from a downstream
 provider on the first user request.
+
+Model providers are selected per model family: ``LLM_PROVIDER`` picks where
+chat completions come from and ``EMBEDDING_PROVIDER`` where embeddings come
+from. Both can be ``openai`` (paid, requires ``OPENAI_API_KEY``) or ``ollama``
+(local and free). Choosing Ollama removes the API-key requirement entirely.
 """
 
 import os
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -47,8 +53,10 @@ class Settings(BaseSettings):
     )
 
     # --- Required ---------------------------------------------------------
+    # Only enforced when an OpenAI provider is selected; with both providers
+    # set to "ollama" the service runs fully locally without any API key.
     OPENAI_API_KEY: str = Field(
-        ...,
+        default="",
         description="OpenAI API key used for chat completions and embeddings.",
     )
     JWT_SECRET_KEY: str = Field(
@@ -70,6 +78,13 @@ class Settings(BaseSettings):
     QDRANT_COLLECTION: str = "adaptive_rag_documents"
 
     # --- Models -----------------------------------------------------------
+    # Which provider serves each model family. "openai" needs OPENAI_API_KEY;
+    # "ollama" turns a local Ollama server into a free, keyless provider.
+    LLM_PROVIDER: Literal["openai", "ollama"] = "openai"
+    EMBEDDING_PROVIDER: Literal["openai", "ollama"] = "openai"
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "qwen2.5:7b"
+    OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
     OPENAI_MODEL: str = "gpt-4o"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
 
@@ -123,15 +138,17 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     APP_VERSION: str = "1.0.0"
 
-    @field_validator("OPENAI_API_KEY")
-    @classmethod
-    def _require_openai_key(cls, value: str) -> str:
-        if value.strip() in _PLACEHOLDER_SECRETS:
+    @model_validator(mode="after")
+    def _require_openai_key_when_selected(self) -> "Settings":
+        if (
+            self.LLM_PROVIDER == "openai" or self.EMBEDDING_PROVIDER == "openai"
+        ) and self.OPENAI_API_KEY.strip() in _PLACEHOLDER_SECRETS:
             raise ValueError(
-                "OPENAI_API_KEY is not set. Copy .env.example to .env and "
-                "provide a real key."
+                "OPENAI_API_KEY is not set but an OpenAI provider is selected. "
+                "Provide a real key, or run fully locally by setting "
+                "LLM_PROVIDER and EMBEDDING_PROVIDER to 'ollama'."
             )
-        return value.strip()
+        return self
 
     @field_validator("JWT_SECRET_KEY")
     @classmethod
@@ -199,6 +216,25 @@ class Settings(BaseSettings):
     def vector_backend(self) -> str:
         """Name of the active vector store backend."""
         return "qdrant" if self.qdrant_enabled else "faiss"
+
+    @property
+    def free_local_mode(self) -> bool:
+        """True when every model provider runs locally through Ollama."""
+        return self.LLM_PROVIDER == "ollama" and self.EMBEDDING_PROVIDER == "ollama"
+
+    @property
+    def chat_model_name(self) -> str:
+        """Name of the chat model the selected provider serves."""
+        if self.LLM_PROVIDER == "ollama":
+            return self.OLLAMA_MODEL
+        return self.OPENAI_MODEL
+
+    @property
+    def embedding_model_name(self) -> str:
+        """Name of the embedding model the selected provider serves."""
+        if self.EMBEDDING_PROVIDER == "ollama":
+            return self.OLLAMA_EMBEDDING_MODEL
+        return self.OPENAI_EMBEDDING_MODEL
 
 
 @lru_cache(maxsize=1)
