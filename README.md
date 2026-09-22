@@ -1,6 +1,6 @@
 # Adaptive RAG - Agentic AI Chatbot
 
-[![Python 3.9+](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Latest-green.svg)](https://fastapi.tiangolo.com/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.5.4-orange.svg)](https://python.langchain.com/langgraph/)
 [![Qdrant](https://img.shields.io/badge/Qdrant-VectorDB-purple.svg)](https://qdrant.tech/)
@@ -157,7 +157,7 @@ Adaptive-Rag/
 │   ├── pages/chat.py                 # Chat and document upload
 │   └── utils/api_client.py           # Typed API client with timeouts
 │
-├── tests/                            # 432 tests (pytest)
+├── tests/                            # 454 tests (pytest)
 │   ├── conftest.py                   # Fixtures, fakes, state reset
 │   ├── test_config.py                # Settings validation
 │   ├── test_security.py              # Hashing and JWT
@@ -498,7 +498,7 @@ Then set `QDRANT_URL=http://localhost:6333` and
 ### 2. Installation
 
 ```bash
-git clone https://github.com/dhruvsinghal09/Adaptive-Rag.git
+git clone https://github.com/Aryan41211/Adaptive-rag.git
 cd Adaptive-Rag
 
 python -m venv .venv
@@ -818,11 +818,16 @@ The API waits for Qdrant and MongoDB to report healthy before starting, so it
 never boots into its non-durable fallbacks by accident.
 
 MongoDB requires authentication: compose refuses to start without
-`MONGO_ROOT_PASSWORD` rather than leaving the database open. Both data stores
-publish on `127.0.0.1` only — bound to `0.0.0.0` they would be reachable from
-anywhere that can route to the host, which on a cloud VM means the internet.
-The API reaches them over the compose network, which those port mappings play
-no part in; they exist for `deploy/backup.sh` and local tooling.
+`MONGO_ROOT_PASSWORD` rather than leaving the database open. The API and both
+data stores publish on `127.0.0.1` only — bound to `0.0.0.0` they would be
+reachable from anywhere that can route to the host, which on a cloud VM means
+the internet. The API also serves `/docs`, `/redoc`, `/openapi.json` while
+`ENABLE_API_DOCS` is true and the unauthenticated `/metrics/prometheus`, and
+it runs uvicorn with `--forwarded-allow-ips`, which would trust a spoofed
+`X-Forwarded-For` off the loopback interface — public traffic goes through
+the Caddy edge instead. Containers reach each other over the compose network,
+which those port mappings play no part in; they exist for `deploy/backup.sh`
+and local tooling.
 
 The credentials are applied only when the `mongo_data` volume is first
 created. Turning authentication on for a stack that has already run means:
@@ -886,10 +891,11 @@ Encrypt certificate automatically, redirects HTTP to HTTPS, and sets HSTS,
 `X-Content-Type-Options`, `X-Frame-Options` and `Referrer-Policy`. It forwards
 the real client address, which the rate limiter keys on.
 
-`/docs`, `/redoc` and `/openapi.json` return 404 at this edge. The schema
-enumerates every endpoint, parameter and payload shape, which is a map of the
-attack surface; reach it on the API port from inside the private network, or
-delete that block in `deploy/Caddyfile` to publish it deliberately.
+`/docs`, `/redoc` and `/openapi.json` return 404 at this edge, as does
+`/metrics/prometheus`. The schema enumerates every endpoint, parameter and
+payload shape, which is a map of the attack surface; reach it on the host's
+loopback API port (`127.0.0.1:8000`), or delete that block in
+`deploy/Caddyfile` to publish it deliberately.
 
 Use `DOMAIN=localhost` to try it locally; Caddy then issues an internal
 certificate rather than contacting Let's Encrypt.
@@ -1084,10 +1090,10 @@ Contributions are welcome! Please follow these steps:
 ## ❓ FAQ
 
 **Q: How do I upload multiple documents?**  
-A: Upload one document at a time through the Streamlit interface. Each upload creates a new indexed collection.
+A: Upload one document at a time through the Streamlit interface. Each upload adds its chunks to your knowledge base, so later queries see every document — `GET /rag/documents` lists them all.
 
 **Q: What's the maximum file size?**  
-A: Limited by system memory and Qdrant storage. Typical limit is 100MB per file.
+A: `MAX_UPLOAD_BYTES`, 10 MB by default. Larger files are rejected with `413` before any processing.
 
 **Q: Can I use different LLM providers?**  
 A: Currently configured for OpenAI. You can modify `src/llms/openai.py` to use other providers.
@@ -1103,7 +1109,7 @@ A: Yes, remove Tavily dependency. Queries will use index or general LLM only.
 ## 💬 Support & Contact
 
 For issues, questions, or suggestions:
-- Open an [Issue](https://github.com/dhruvsinghal09/Adaptive-Rag/issues)
+- Open an [Issue](https://github.com/Aryan41211/Adaptive-rag/issues)
 - Check existing documentation
 - Review the code comments
 
@@ -1128,9 +1134,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 👤 Author
 
-**Dhruv Singhal**
+**Dhruv Singhal** (original author)
 - GitHub: [@dhruvsinghal09](https://github.com/dhruvsinghal09)
-- Project: [Adaptive RAG](https://github.com/dhruvsinghal09/Adaptive-Rag)
+- Project: [Adaptive RAG](https://github.com/Aryan41211/Adaptive-rag)
 
 ---
 
@@ -1164,7 +1170,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
   recover cycle
 - ✅ **Optional OpenTelemetry tracing**, annotated with route, tokens and cost
 - ✅ CI: lint, tests on two Python versions, and a Docker build smoke test
-- ✅ Automated test suite (432 tests, 94% coverage of `src/`)
+- ✅ Automated test suite (454 tests, 94% coverage of `src/`)
 
 ### Not yet done
 
@@ -1193,6 +1199,6 @@ against a live API key.
 
 ---
 
-**Last Updated**: August 24, 2026  
+**Last Updated**: September 22, 2026  
 **Status**: Functionally complete and tested; see Project Status for production caveats  
 **Documentation**: ✅ Comprehensive
