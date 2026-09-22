@@ -72,8 +72,15 @@ services:
   api:
     build: .
     restart: unless-stopped
+    # Loopback only, like the data stores: the UI and Prometheus reach the API
+    # over the compose network, so the host mapping exists purely for local
+    # tooling. Published on 0.0.0.0, /docs, /redoc, /openapi.json and the
+    # unauthenticated /metrics/prometheus would all be reachable externally,
+    # and uvicorn's --forwarded-allow-ips would trust a spoofed
+    # X-Forwarded-For, defeating the rate limiter. Public traffic goes through
+    # the tls profile's Caddy edge instead.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in .env}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set JWT_SECRET_KEY in .env}
@@ -83,8 +90,9 @@ services:
       # authSource=admin: the root user lives in `admin`, not in the
       # application database it is being used to reach.
       MONGODB_URL: mongodb://${MONGO_ROOT_USERNAME:-adaptive}:${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD in .env}@mongo:27017/?authSource=admin
-      # The schema maps the whole attack surface; off by default for anything
-      # reachable from outside the host.
+      # The schema maps the whole attack surface; on only because the docker
+      # compose API port is loopback-bound. The tls profile blocks these paths
+      # at the Caddy edge regardless, and .env.production.example turns it off.
       ENABLE_API_DOCS: ${ENABLE_API_DOCS:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     depends_on:

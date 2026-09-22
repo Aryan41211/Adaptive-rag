@@ -12,9 +12,15 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 SCRIPTS = [DEPLOY / "backup.sh", DEPLOY / "restore.sh"]
+COMPOSE = Path(__file__).resolve().parents[1] / "docker-compose.yml"
+
+
+def compose():
+    return yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
@@ -137,3 +143,54 @@ def test_schema_is_not_served_at_the_public_edge(path):
     body = block[1].split("}", 1)[0]
     assert "respond 404" in body
     assert "reverse_proxy" not in body
+
+
+def test_prometheus_endpoint_is_not_served_at_the_public_edge():
+    """
+    /metrics/prometheus exposes internals and is unauthenticated; the API's
+    /metrics handler is an exact match in Caddy, so without its own block this
+    path would fall through to the UI handler.
+    """
+    caddyfile = (DEPLOY / "Caddyfile").read_text(encoding="utf-8")
+    block = caddyfile.split("handle /metrics/prometheus* {", 1)
+    assert len(block) == 2, "no handler for /metrics/prometheus*"
+    body = block[1].split("}", 1)[0]
+    assert "respond 404" in body
+    assert "reverse_proxy" not in body
+
+
+# --- exposure boundary ------------------------------------------------------
+@pytest.mark.parametrize(
+    "service",
+    [
+        "api",
+        "qdrant",
+        "mongo",
+        "prometheus",
+        "grafana",
+        "node-exporter",
+    ],
+)
+def test_service_is_published_on_loopback_only(service):
+    """
+    A port published on 0.0.0.0 is reachable from anywhere that can route to
+    the host, which on a cloud VM means the internet. Container-to-container
+    traffic uses the compose network and ignores these mappings entirely; they
+    exist for host tooling, so every one of them must be loopback-bound.
+    """
+    ports = compose()["services"][service].get("ports", [])
+    assert ports, f"{service} publishes no ports"
+    for port in ports:
+        assert port.startswith("127.0.0.1:"), f"{service} publishes {port}"
+
+
+def test_api_is_not_published_on_all_interfaces():
+    """
+    The API carries the unauthenticated /metrics/prometheus endpoint, the
+    OpenAPI schema (ENABLE_API_DOCS defaults to true), and a uvicorn running
+    with --forwarded-allow-ips, which trusts a spoofed X-Forwarded-For and
+    defeats the rate limiter. Published on 0.0.0.0 it must therefore be fixed
+    to the loopback interface.
+    """
+    ports = compose()["services"]["api"]["ports"]
+    assert "127.0.0.1:8000:8000" in ports

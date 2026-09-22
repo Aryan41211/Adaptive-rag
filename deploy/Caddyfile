@@ -47,6 +47,15 @@
 		reverse_proxy api:8000
 	}
 
+	# The Prometheus scrape endpoint is unauthenticated and the loopback-bound
+	# compose API port is where the collector normally reads it from. It must
+	# never be obtainable through the public edge: Caddy's /metrics block above
+	# is an exact match, so without this block these paths would fall through
+	# to the UI handler.
+	handle /metrics/prometheus* {
+		respond 404
+	}
+
 	handle /healthz {
 		reverse_proxy api:8000
 	}
@@ -57,8 +66,8 @@
 
 	# The interactive schema enumerates every endpoint, parameter and payload
 	# shape, which is a map of the attack surface. This profile is the public
-	# edge, so it is not served here; reach it on the API port from inside the
-	# private network, or delete this block to publish it deliberately.
+	# edge, so it is not served here; reach it on the host's loopback API port
+	# (127.0.0.1:8000), or delete this block to publish it deliberately.
 	handle /docs* {
 		respond 404
 	}
