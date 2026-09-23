@@ -428,6 +428,24 @@ def build_graph():
 builder = build_graph()
 
 
+@functools.lru_cache(maxsize=1)
+def _provider_error_types() -> tuple[type[BaseException], ...]:
+    """
+    Exceptions treated as an upstream provider outage.
+
+    An OpenAI, Gemini or transport failure means the model provider is down:
+    any of these becomes a 502, never an internal 500. Imported lazily so the
+    module imports cleanly without its provider SDKs, matching the style of
+    the call sites.
+    """
+    import httpx
+    from google.api_core.exceptions import GoogleAPICallError
+    from langchain_google_genai._common import GoogleGenerativeAIError
+    from openai import OpenAIError
+
+    return (OpenAIError, httpx.HTTPError, GoogleGenerativeAIError, GoogleAPICallError)
+
+
 async def run_query(user_id: str, messages: list) -> tuple[str, list[dict], dict]:
     """
     Run one turn of the graph and return the answer text.
@@ -444,9 +462,7 @@ async def run_query(user_id: str, messages: list) -> tuple[str, list[dict], dict
     Raises:
         RetrievalError: If the graph fails or produces no answer.
     """
-    import httpx
     from langgraph.errors import GraphRecursionError
-    from openai import OpenAIError
 
     from src.core.exceptions import RetrievalError
     from src.core.usage import UsageTracker
@@ -467,7 +483,7 @@ async def run_query(user_id: str, messages: list) -> tuple[str, list[dict], dict
             "The assistant could not converge on an answer. Please rephrase "
             "your question."
         ) from exc
-    except (OpenAIError, httpx.HTTPError) as exc:
+    except _provider_error_types() as exc:
         tracker.finish()
         # An upstream provider failure is a 502, not an internal 500.
         logger.error("Model provider call failed: %s", exc)
@@ -531,9 +547,7 @@ async def stream_query(user_id: str, messages: list) -> AsyncIterator[dict]:
     Yields:
         Event dictionaries in the order above.
     """
-    import httpx
     from langgraph.errors import GraphRecursionError
-    from openai import OpenAIError
 
     from src.core.usage import UsageTracker
 
@@ -580,7 +594,7 @@ async def stream_query(user_id: str, messages: list) -> AsyncIterator[dict]:
             "Please rephrase your question.",
         }
         return
-    except (OpenAIError, httpx.HTTPError) as exc:
+    except _provider_error_types() as exc:
         tracker.finish()
         logger.error("Model provider call failed: %s", exc)
         yield {
