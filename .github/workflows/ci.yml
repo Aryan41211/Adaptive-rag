@@ -139,7 +139,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Derive image tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           # Lowercased by the action: registry paths reject uppercase, and
           # GitHub owner names may contain it.
