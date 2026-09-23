@@ -645,8 +645,10 @@ All settings are environment variables, validated by `src/core/config.py`.
 
 | Variable | Description |
 |---|---|
-| `OPENAI_API_KEY` | OpenAI key for chat and embeddings |
 | `JWT_SECRET_KEY` | Signs access tokens. Minimum 32 characters; placeholder values are rejected |
+| `LLM_PROVIDER`, `EMBEDDING_PROVIDER` | `openai`, `gemini` or `ollama`. Picks where chat and embeddings run |
+| `OPENAI_API_KEY` | Required only while an OpenAI provider is selected |
+| `GEMINI_API_KEY` | Required only while a Gemini provider is selected |
 
 ### Optional
 
@@ -660,6 +662,8 @@ All settings are environment variables, validated by `src/core/config.py`.
 | `MONGODB_DB_NAME` | `adaptive_rag` | Database name |
 | `OPENAI_MODEL` | `gpt-4o` | Chat model |
 | `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
+| `GEMINI_MODEL` | `gemini-3.6-flash` | Gemini chat model; verified served for new accounts |
+| `GEMINI_EMBEDDING_MODEL` | `gemini-embedding-001` | Gemini embedding model (3072 dimensions) |
 | `MAX_HISTORY_MESSAGES` | `20` | Conversation turns sent to the model |
 | `MAX_UPLOAD_BYTES` | `10485760` | Upload size cap (10 MB) |
 | `MAX_QUERY_LENGTH` | `4000` | Maximum question length |
@@ -888,6 +892,44 @@ docker build -t adaptive-rag .
 docker run -p 8000:8000 -e OPENAI_API_KEY=... -e JWT_SECRET_KEY=... adaptive-rag
 ```
 
+### Render free-tier deployment
+
+The whole stack runs on free tiers with no per-token bill: Gemini serves chat
+and embeddings, Qdrant Cloud stores documents and MongoDB Atlas stores users
+and history. `render.yaml` wires up two web services (a Docker API and a
+Python Streamlit UI) and keeps every credential out of the repository.
+
+1. **Create the external stores** (each has a free tier, no card):
+   - Google AI Studio key → `https://aistudio.google.com/apikey`
+   - Qdrant Cloud cluster + API key → `https://cloud.qdrant.io`
+   - MongoDB Atlas cluster + Database Access user → `https://www.mongodb.com/atlas`
+2. **Deploy the blueprint**: Render → *New* → *Blueprint*, select this repo. It
+   creates `adaptive-rag-api` and `adaptive-rag-ui`.
+3. **Fill in the dashboard-only secrets** (`sync: false` — never in git):
+   `GEMINI_API_KEY`, `QDRANT_URL`, `QDRANT_API_KEY`,
+   `MONGODB_URL` (`mongodb+srv://USER:PASSWORD@CLUSTER.mongodb.net/?retryWrites=true&w=majority`),
+   and `API_BASE_URL` (the deployed API's live URL, e.g. `https://adaptive-rag-api.onrender.com`).
+   `JWT_SECRET_KEY` is generated for you once and kept in the dashboard.
+4. **Harden once it is up**: set `ALLOWED_HOSTS` to your `.onrender.com`
+   hostname (the default `*` answers any Host header) and confirm
+   `ENABLE_API_DOCS=false`.
+
+What the free tier cannot do:
+
+- **Sleep & stream**: Render free services spin down after inactivity, so the
+  first request can take ~30–60s to wake; Gemini has no streaming switch, so
+  the streaming endpoint delivers answers in a single chunk (same as the
+  Ollama provider). Use the non-streaming `/query` endpoint for an interactive
+  feel, and note Render tears a free service down after ~15 minutes idle.
+- **Model naming**: new Google accounts get 404 for the older
+  `gemini-2.5-flash` / `text-embedding-004` names; the defaults above are the
+  verified ones.
+- **Cost tracking**: Gemini prices are not tabulated, so unknown models report
+  `$0` in the cost breakdown rather than a made-up figure.
+
+To deploy manually instead of via blueprint, add one *Web Service* per block in
+`render.yaml` and copy the `envVars` over.
+
 ### Published images
 
 CI publishes to GitHub Container Registry after lint, tests and the image
@@ -1064,6 +1106,7 @@ Add cases in `evals/data/golden.yaml`.
 | In-memory user/history fallback | Applies only when `MONGODB_URL` is unset | By design; use MongoDB |
 | Evaluation is not run in CI | It calls the provider and costs money | Run `python -m evals` deliberately |
 | Evaluation scoring is lexical | It checks that required facts appear, not that the prose is good | By design; an LLM judge would add cost and variance |
+| Gemini answers are non-streamed | No per-token streaming in `langchain-google-genai`; the stream endpoint falls back to one chunk | By design; use `/query` for pacing |
 
 ---
 
