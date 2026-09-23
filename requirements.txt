@@ -14,6 +14,9 @@ langchain-core==0.3.72
 langchain-community==0.3.27
 langchain-openai==0.3.28
 langchain-ollama==0.3.5
+# Newest 2.x that supports langchain-core 0.3.x; 2.1+ needs core>=0.3.75 and
+# 3.x/4.x need core 1.x, so it must not be bumped with this core pin.
+langchain-google-genai==2.0.11
 langchain-text-splitters==0.3.9
 langgraph==0.5.4
 
