@@ -131,8 +131,12 @@ def test_active_model_names_follow_the_provider():
 
 
 def test_placeholder_jwt_secret_is_rejected():
-    with pytest.raises(ValidationError):
-        _settings(JWT_SECRET_KEY="change-me-generate-a-long-random-value")
+    for placeholder in (
+        "change-me-generate-a-long-random-value",
+        "replace-with-a-long-random-secret",
+    ):
+        with pytest.raises(ValidationError):
+            _settings(JWT_SECRET_KEY=placeholder)
 
 
 def test_short_jwt_secret_is_rejected():
