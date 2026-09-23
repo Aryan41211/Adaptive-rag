@@ -22,6 +22,7 @@ test is *skipped* with that explicit reason. A test is never silently marked
 passed without a real provider call completing.
 """
 
+import os
 import time
 from collections.abc import Callable
 from typing import TypeVar
@@ -29,9 +30,31 @@ from typing import TypeVar
 import pytest
 from dotenv import load_dotenv
 
+from src.core.config import settings
+
 load_dotenv()
 
 _T = TypeVar("_T")
+
+
+@pytest.fixture(scope="session")
+def gemini_api_key() -> str:
+    """The real, untracked Gemini key, or an explicit skip when it is absent.
+
+    Mirrors the runtime config path (``GEMINI_API_KEY`` from ``.env``). The
+    factory defaults are reposac placeholders; any key that still looks like a
+    placeholder or the ``change-me`` template is treated as absent so a stray
+    committed value can never be mistaken for credentials.
+    """
+    candidate = (settings.GEMINI_API_KEY or os.getenv("GEMINI_API_KEY") or "").strip()
+    if not candidate:
+        pytest.skip("GEMINI_API_KEY is not set in .env - add one to run live probes")
+    if any(
+        marker in candidate.lower()
+        for marker in ("change-me", "replace-with", "replace_me", "xxxxx")
+    ):
+        pytest.skip("GEMINI_API_KEY looks like a placeholder - set a real key")
+    return candidate
 
 
 def retry_gemini_quota(
