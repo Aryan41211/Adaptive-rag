@@ -48,6 +48,48 @@ def test_placeholder_openai_key_is_rejected():
         _settings(OPENAI_API_KEY="sk-your-openai-key-here")
 
 
+# --- Gemini provider ---------------------------------------------------------
+def test_gemini_provider_without_a_key_is_rejected():
+    with pytest.raises(ValidationError):
+        _settings(LLM_PROVIDER="gemini")
+    with pytest.raises(ValidationError):
+        _settings(EMBEDDING_PROVIDER="gemini")
+
+
+def test_placeholder_gemini_key_is_rejected():
+    """A copied-but-unedited .env must not boot when Gemini is selected."""
+    with pytest.raises(ValidationError):
+        _settings(LLM_PROVIDER="gemini", GEMINI_API_KEY="your-gemini-api-key-here")
+
+
+def test_gemini_provider_with_a_key_is_valid():
+    settings = _settings(
+        LLM_PROVIDER="gemini",
+        EMBEDDING_PROVIDER="gemini",
+        OPENAI_API_KEY="",
+        GEMINI_API_KEY="gem-real-looking-key",
+    )
+    assert settings.GEMINI_MODEL == "gemini-3.6-flash"
+    assert settings.GEMINI_EMBEDDING_MODEL == "gemini-embedding-001"
+
+
+def test_ollama_and_openai_do_not_require_a_gemini_key():
+    """No Gemini key may be demanded when Gemini is not selected."""
+    _settings(LLM_PROVIDER="ollama", EMBEDDING_PROVIDER="ollama", OPENAI_API_KEY="")
+    _settings(OPENAI_API_KEY="sk-real-looking-key")
+
+
+def test_gemini_model_names_follow_the_provider():
+    gemini = _settings(
+        LLM_PROVIDER="gemini",
+        EMBEDDING_PROVIDER="gemini",
+        OPENAI_API_KEY="",
+        GEMINI_API_KEY="gem-real-looking-key",
+    )
+    assert gemini.chat_model_name == "gemini-3.6-flash"
+    assert gemini.embedding_model_name == "gemini-embedding-001"
+
+
 # --- provider selection -----------------------------------------------------
 def test_providers_default_to_openai():
     settings = _settings()

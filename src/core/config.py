@@ -8,8 +8,9 @@ provider on the first user request.
 
 Model providers are selected per model family: ``LLM_PROVIDER`` picks where
 chat completions come from and ``EMBEDDING_PROVIDER`` where embeddings come
-from. Both can be ``openai`` (paid, requires ``OPENAI_API_KEY``) or ``ollama``
-(local and free). Choosing Ollama removes the API-key requirement entirely.
+from. Both can be ``openai`` (paid, requires ``OPENAI_API_KEY``), ``ollama``
+(local and free) or ``gemini`` (requires ``GEMINI_API_KEY``). Choosing Ollama
+removes the API-key requirement entirely.
 """
 
 import os
@@ -37,7 +38,9 @@ _secrets_dir = str(SECRETS_DIR) if SECRETS_DIR.is_dir() else None
 _PLACEHOLDER_SECRETS = {
     "",
     "change-me-generate-a-long-random-value",
+    "replace-with-a-long-random-secret",
     "sk-your-openai-key-here",
+    "your-gemini-api-key-here",
 }
 
 
@@ -53,11 +56,16 @@ class Settings(BaseSettings):
     )
 
     # --- Required ---------------------------------------------------------
-    # Only enforced when an OpenAI provider is selected; with both providers
-    # set to "ollama" the service runs fully locally without any API key.
+    # Only enforced when an OpenAI or Gemini provider is selected; with both
+    # providers set to "ollama" the service runs fully locally without any
+    # API key.
     OPENAI_API_KEY: str = Field(
         default="",
         description="OpenAI API key used for chat completions and embeddings.",
+    )
+    GEMINI_API_KEY: str = Field(
+        default="",
+        description="Google AI Studio API key for Gemini models.",
     )
     JWT_SECRET_KEY: str = Field(
         ...,
@@ -78,15 +86,20 @@ class Settings(BaseSettings):
     QDRANT_COLLECTION: str = "adaptive_rag_documents"
 
     # --- Models -----------------------------------------------------------
-    # Which provider serves each model family. "openai" needs OPENAI_API_KEY;
-    # "ollama" turns a local Ollama server into a free, keyless provider.
-    LLM_PROVIDER: Literal["openai", "ollama"] = "openai"
-    EMBEDDING_PROVIDER: Literal["openai", "ollama"] = "openai"
+    # Which provider serves each model family. "openai" needs OPENAI_API_KEY,
+    # "gemini" needs GEMINI_API_KEY, and "ollama" turns a local Ollama server
+    # into a free, keyless provider.
+    LLM_PROVIDER: Literal["openai", "ollama", "gemini"] = "openai"
+    EMBEDDING_PROVIDER: Literal["openai", "ollama", "gemini"] = "openai"
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "qwen2.5:7b"
     OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
     OPENAI_MODEL: str = "gpt-4o"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    # Verified working for new Google accounts; the older names these used to
+    # ship with return 404 for the current account and must not be the default.
+    GEMINI_MODEL: str = "gemini-3.6-flash"
+    GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
 
     # --- Behaviour limits -------------------------------------------------
     MAX_HISTORY_MESSAGES: int = Field(default=20, ge=2, le=200)
@@ -139,15 +152,27 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
 
     @model_validator(mode="after")
-    def _require_openai_key_when_selected(self) -> "Settings":
-        if (
+    def _require_provider_keys_when_selected(self) -> "Settings":
+        missing: list[str] = []
+        openai_selected = (
             self.LLM_PROVIDER == "openai" or self.EMBEDDING_PROVIDER == "openai"
-        ) and self.OPENAI_API_KEY.strip() in _PLACEHOLDER_SECRETS:
-            raise ValueError(
+        )
+        if openai_selected and self.OPENAI_API_KEY.strip() in _PLACEHOLDER_SECRETS:
+            missing.append(
                 "OPENAI_API_KEY is not set but an OpenAI provider is selected. "
                 "Provide a real key, or run fully locally by setting "
                 "LLM_PROVIDER and EMBEDDING_PROVIDER to 'ollama'."
             )
+        gemini_selected = (
+            self.LLM_PROVIDER == "gemini" or self.EMBEDDING_PROVIDER == "gemini"
+        )
+        if gemini_selected and self.GEMINI_API_KEY.strip() in _PLACEHOLDER_SECRETS:
+            missing.append(
+                "GEMINI_API_KEY is missing. Set GEMINI_API_KEY or choose a "
+                "provider that does not require it."
+            )
+        if missing:
+            raise ValueError("\n".join(missing))
         return self
 
     @field_validator("JWT_SECRET_KEY")
@@ -227,6 +252,8 @@ class Settings(BaseSettings):
         """Name of the chat model the selected provider serves."""
         if self.LLM_PROVIDER == "ollama":
             return self.OLLAMA_MODEL
+        if self.LLM_PROVIDER == "gemini":
+            return self.GEMINI_MODEL
         return self.OPENAI_MODEL
 
     @property
@@ -234,6 +261,8 @@ class Settings(BaseSettings):
         """Name of the embedding model the selected provider serves."""
         if self.EMBEDDING_PROVIDER == "ollama":
             return self.OLLAMA_EMBEDDING_MODEL
+        if self.EMBEDDING_PROVIDER == "gemini":
+            return self.GEMINI_EMBEDDING_MODEL
         return self.OPENAI_EMBEDDING_MODEL
 
 
