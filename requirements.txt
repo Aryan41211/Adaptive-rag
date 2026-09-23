@@ -9,41 +9,41 @@
 # ---------------------------------------------------------------------------
 
 # --- LangChain / LangGraph (0.3.x line - do not bump without testing) ---
-langchain==0.3.27
-langchain-core==0.3.72
-langchain-community==0.3.27
-langchain-openai==0.3.28
-langchain-ollama==0.3.5
+langchain==1.4.2
+langchain-core==1.6.3
+langchain-community==0.4.2
+langchain-openai==1.6.2
+langchain-ollama==1.1.0
 # Newest 2.x that supports langchain-core 0.3.x; 2.1+ needs core>=0.3.75 and
 # 3.x/4.x need core 1.x, so it must not be bumped with this core pin.
-langchain-google-genai==2.0.11
-langchain-text-splitters==0.3.9
-langgraph==0.5.4
+langchain-google-genai==4.4.0
+langchain-text-splitters==1.1.2
+langgraph==1.2.11
 
 # --- Web framework ---
-fastapi>=0.115,<0.120
-uvicorn[standard]>=0.34,<0.40
+fastapi>=0.141.1,<0.142
+uvicorn[standard]>=0.53.0,<0.54
 python-multipart>=0.0.19,<0.1
-pydantic>=2.11,<3
+pydantic>=2.13.5,<3
 pydantic-settings>=2.8,<3
 
 # --- Vector store & document loading ---
 # Qdrant is the persistent, multi-worker backend; FAISS is the in-process
 # development fallback used when QDRANT_URL is unset.
-langchain-qdrant>=0.2,<0.3
-qdrant-client>=1.12,<2
-faiss-cpu>=1.9,<2
-pypdf>=5.4,<7
+langchain-qdrant>=1.1.0,<1.2
+qdrant-client>=1.19.1,<2
+faiss-cpu>=1.15.1,<2
+pypdf>=6.19.0,<7
 
 # --- Web search ---
-tavily-python>=0.7,<1
+tavily-python>=0.8.4,<1
 
 # --- Persistence ---
 motor>=3.6,<4
-pymongo>=4.11,<5
+pymongo>=4.18.1,<5
 
 # --- Auth ---
-PyJWT>=2.9,<3
+PyJWT>=2.14.0,<3
 bcrypt>=4.2,<6
 
 # --- Config & utilities ---
@@ -55,4 +55,4 @@ requests>=2.32,<3
 prometheus-client>=0.20,<1
 
 # --- UI ---
-streamlit>=1.44,<2
+streamlit>=1.64.0,<2
