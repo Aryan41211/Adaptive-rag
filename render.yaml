@@ -27,6 +27,10 @@ services:
     healthCheckPath: /healthz
     autoDeploy: true
     envVars:
+      # The image tag already sets this; Render needs to know it too, because a
+      # mismatched value silently changes which interpreter the container runs.
+      - key: PYTHON_VERSION
+        value: "3.12.8"
       # Providers: gemini is the free-tier default; openai/ollama also valid.
       - key: LLM_PROVIDER
         value: gemini
@@ -59,6 +63,18 @@ services:
       # Hardening for the public endpoint; API docs would reveal the schema.
       - key: ENABLE_API_DOCS
         value: "false"
+      # Without this the API answers any Host header, and TrustedHostMiddleware
+      # is not installed at all (the default is "*"). Set this to the custom
+      # domain too if you attach one; the generated hostname is listed here so
+      # the blueprint is not created in the open state.
+      - key: ALLOWED_HOSTS
+        value: adaptive-rag-api.onrender.com
+      # Render terminates TLS itself, so there is no Caddy edge here to answer
+      # 404 for /metrics/prometheus. This token is what keeps the route,
+      # latency and model-spend internals private. Scraper:
+      #   authorization: credentials: <token>
+      - key: METRICS_TOKEN
+        generateValue: true
       - key: LOG_LEVEL
         value: WARNING
 
@@ -74,6 +90,12 @@ services:
     healthCheckPath: /_stcore/health
     autoDeploy: true
     envVars:
+      # `runtime: python` has no image to inherit an interpreter from, and
+      # requirements.lock.txt was resolved by pip-compile under a single 3.12
+      # with no markers to fall back on. Without this Render installs it under
+      # whatever its current default happens to be.
+      - key: PYTHON_VERSION
+        value: "3.12.8"
       # The API is deployed once. Then set this to the live API URL
       # (https://adaptive-rag-api.onrender.com) so the UI can reach it.
       - key: API_BASE_URL

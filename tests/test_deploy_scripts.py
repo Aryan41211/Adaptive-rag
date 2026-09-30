@@ -159,11 +159,181 @@ def test_prometheus_endpoint_is_not_served_at_the_public_edge():
     assert "reverse_proxy" not in body
 
 
+# --- provider configuration -------------------------------------------------
+@pytest.mark.parametrize(
+    "key",
+    ["GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_EMBEDDING_MODEL"],
+)
+def test_api_receives_every_gemini_setting(key):
+    """
+    The provider is selected in the environment, so the key that makes that
+    selection valid has to reach the container with it. LLM_PROVIDER=gemini
+    with no GEMINI_API_KEY aborts at import (config validation) rather than
+    degrading, so the documented production .env cannot start the stack.
+    """
+    assert key in compose()["services"]["api"]["environment"]
+
+
+def test_compose_providers_come_from_the_env_file():
+    """A value hardcoded in compose silently overrides the operator's .env."""
+    env = compose()["services"]["api"]["environment"]
+    for key in ("LLM_PROVIDER", "EMBEDDING_PROVIDER", "GEMINI_MODEL"):
+        assert env[key].startswith("${"), f"{key} is pinned to {env[key]}"
+
+
+# --- interpolation ----------------------------------------------------------
+def test_no_variable_is_required_outside_an_opt_in_profile():
+    """
+    Compose interpolates the whole file before starting anything and before it
+    looks at profiles, so `${VAR:?}` in an opt-in service aborts the default
+    quickstart for an operator who never asked for that service.
+    GRAFANA_ADMIN_PASSWORD had exactly this shape.
+    """
+    for name, service in compose()["services"].items():
+        if not service.get("profiles"):
+            continue
+        for key, value in (service.get("environment") or {}).items():
+            assert ":?" not in str(value), (
+                f"{name} is opt-in but requires {key}={value}, which aborts the "
+                f"default profile too"
+            )
+
+
+def test_the_default_profile_still_serves_the_application():
+    """Gating observability behind a profile must not take the app with it."""
+    services = compose()["services"]
+    for name in ("api", "ui", "qdrant", "mongo"):
+        assert not services[name].get("profiles"), f"{name} is now opt-in"
+
+
+def test_observability_services_share_one_opt_in_profile():
+    """Three separate profiles would mean three ways to start the same stack."""
+    profiles = {
+        tuple(compose()["services"][name].get("profiles", []))
+        for name in ("grafana", "prometheus", "node-exporter")
+    }
+    assert profiles == {("observability",)}, profiles
+
+
+def test_ollama_service_is_not_started_by_default():
+    """Pulls a multi-gigabyte model image; local mode is opt-in via `ollama`."""
+    assert compose()["services"]["ollama"].get("profiles") == ["ollama"]
+
+
+# --- git index modes --------------------------------------------------------
+@pytest.mark.parametrize(
+    "script",
+    [DEPLOY / "backup.sh", DEPLOY / "restore.sh", DEPLOY / "install-backup.sh"],
+    ids=lambda p: p.name,
+)
+def test_script_is_executable_in_the_git_index(script):
+    """
+    systemd's ExecStart and the documented `./deploy/backup.sh` both need the
+    executable bit. Git only records it if the file is staged as 100755, and
+    nothing on a fresh clone sets it otherwise.
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "-s", "--", script.relative_to(DEPLOY.parents[0])],
+        capture_output=True,
+        text=True,
+        cwd=DEPLOY.parents[0],
+    )
+    assert result.returncode == 0, result.stderr
+    mode = result.stdout.split()[0] if result.stdout.split() else ""
+    assert mode == "100755", f"{script.name} is staged {mode}, not 100755"
+
+
+# --- Render blueprint -------------------------------------------------------
+RENDER = Path(__file__).resolve().parents[1] / "render.yaml"
+
+
+def render_service(name):
+    for service in yaml.safe_load(RENDER.read_text(encoding="utf-8"))["services"]:
+        if service["name"] == name:
+            return service
+    raise AssertionError(f"no {name} service in render.yaml")
+
+
+def test_render_ui_pins_the_python_the_lock_file_was_resolved_for():
+    """
+    The UI installs requirements.lock.txt, which pip-compile resolved for a
+    single interpreter. With no pin, Render picks its own default and the
+    resolution does not hold.
+    """
+    lock_header = (
+        (DEPLOY.parents[0] / "requirements.lock.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()[:4]
+    )
+    locked = next(line for line in lock_header if "Python" in line)
+    major_minor = locked.split("Python")[1].strip().split()[0]
+
+    version = {
+        v["key"]: v.get("value") for v in render_service("adaptive-rag-ui")["envVars"]
+    }
+    assert version.get("PYTHON_VERSION", "").startswith(major_minor), (
+        f"lock is {locked.strip()!r} but PYTHON_VERSION is "
+        f"{version.get('PYTHON_VERSION')!r}"
+    )
+
+
+def test_render_ui_pins_the_python_version_even_when_empty():
+    """Render's `runtime: python` honours the variable, not a repo file."""
+    assert "PYTHON_VERSION" in {
+        v["key"] for v in render_service("adaptive-rag-ui")["envVars"]
+    }
+
+
+def test_render_api_pins_the_python_version_it_ships_in_the_image():
+    """The image tag sets the API's interpreter; the blueprint must agree."""
+    dockerfile = (DEPLOY.parents[0] / "Dockerfile").read_text(encoding="utf-8")
+    tag = next(line for line in dockerfile.splitlines() if line.startswith("FROM "))
+    image_python = tag.split("python:")[1].split("-")[0]
+
+    version = {
+        v["key"]: v.get("value") for v in render_service("adaptive-rag-api")["envVars"]
+    }
+    assert version.get("PYTHON_VERSION", "").startswith(image_python), (
+        f"image is {tag.strip()!r} but PYTHON_VERSION is "
+        f"{version.get('PYTHON_VERSION')!r}"
+    )
+
+
+def render_env(service_name):
+    """Env vars of a service, keyed by name, with generateValue as the value."""
+    return {
+        v["key"]: v.get("value") or v.get("generateValue")
+        for v in render_service(service_name)["envVars"]
+    }
+
+
+def test_render_api_restricts_accepted_hosts():
+    """
+    ALLOWED_HOSTS defaults to "*", which skips TrustedHostMiddleware entirely.
+    Deferring it to a post-deploy manual step means the blueprint is created in
+    the vulnerable state, and the README's "harden once it is up" is a step
+    that has to be remembered.
+    """
+    assert render_env("adaptive-rag-api").get("ALLOWED_HOSTS", "*") != "*"
+
+
+def test_render_metrics_endpoint_is_not_publicly_readable():
+    """
+    Render terminates TLS itself, so the Caddy block that 404s
+    /metrics/prometheus does not exist on this path. Without a token the
+    endpoint serves route and latency internals to anyone who finds the host.
+    """
+    assert render_env("adaptive-rag-api").get(
+        "METRICS_TOKEN"
+    ), "METRICS_TOKEN is unset on the public API"
+
+
 # --- exposure boundary ------------------------------------------------------
 @pytest.mark.parametrize(
     "service",
     [
         "api",
+        "ui",
         "qdrant",
         "mongo",
         "prometheus",
@@ -177,6 +347,10 @@ def test_service_is_published_on_loopback_only(service):
     the host, which on a cloud VM means the internet. Container-to-container
     traffic uses the compose network and ignores these mappings entirely; they
     exist for host tooling, so every one of them must be loopback-bound.
+
+    The UI is here because it is the one service carrying a login form, and
+    without the `tls` profile it was the only route to the app that bypassed
+    Caddy's security headers entirely.
     """
     ports = compose()["services"][service].get("ports", [])
     assert ports, f"{service} publishes no ports"

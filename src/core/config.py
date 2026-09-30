@@ -13,6 +13,8 @@ from. Both can be ``openai`` (paid, requires ``OPENAI_API_KEY``), ``ollama``
 removes the API-key requirement entirely.
 """
 
+import ipaddress
+import logging
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -20,6 +22,8 @@ from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -146,6 +150,17 @@ class Settings(BaseSettings):
 
     # --- Prometheus -------------------------------------------------------
     PROMETHEUS_MULTIPROC_DIR: str | None = None
+    # Bearer token for /metrics/prometheus. Empty leaves the endpoint open,
+    # which is correct only where it is unreachable from outside: the compose
+    # stack publishes that port on loopback alone. A hosted deployment has no
+    # such edge, so it must set a token - the response carries route names,
+    # per-endpoint latency and model spend.
+    METRICS_TOKEN: str = ""
+    # Comma-separated proxy addresses or CIDR ranges permitted to set
+    # X-Forwarded-For. Empty trusts nobody. A client can forge that header, so
+    # honouring it from an arbitrary peer lets one attacker mint a fresh rate
+    # limit identity per request.
+    TRUSTED_PROXIES: str = ""
 
     # --- Ops --------------------------------------------------------------
     LOG_LEVEL: str = "INFO"
@@ -236,6 +251,29 @@ class Settings(BaseSettings):
         """Hostnames the API will answer to."""
         hosts = [h.strip() for h in self.ALLOWED_HOSTS.split(",") if h.strip()]
         return hosts or ["*"]
+
+    @property
+    def trusted_proxies(self) -> list[ipaddress.ip_network]:
+        """
+        Proxies whose X-Forwarded-For is believed.
+
+        Entries that do not parse as an address or CIDR are dropped rather
+        than raising, so a typo cannot take the API down at import; it falls
+        back to trusting nobody, which is the safe direction.
+        """
+        networks = []
+        for entry in self.TRUSTED_PROXIES.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            try:
+                networks.append(ipaddress.ip_network(entry, strict=False))
+            except ValueError:
+                logger.warning(
+                    "TRUSTED_PROXIES entry %r is not an address or CIDR; ignoring it",
+                    entry,
+                )
+        return networks
 
     @property
     def vector_backend(self) -> str:

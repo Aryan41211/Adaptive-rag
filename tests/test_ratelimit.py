@@ -6,6 +6,7 @@ runs several LLM calls and every upload embeds a whole document.
 """
 
 import pytest
+from starlette.requests import Request
 
 from src.api import ratelimit
 from src.core.config import settings
@@ -107,6 +108,102 @@ async def test_quota_reflects_configuration_changes(monkeypatch):
     assert limiter.quota.limit == 7
     monkeypatch.setattr(settings, "RATE_LIMIT_QUERY_PER_MINUTE", 9)
     assert limiter.quota.limit == 9
+
+
+# --- client address ---------------------------------------------------------
+def _request_with(headers, client_host="203.0.113.9"):
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/auth/login",
+        "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+        "client": (client_host, 50000),
+        "query_string": b"",
+    }
+    return Request(scope)
+
+
+def test_forwarded_header_is_ignored_without_a_trusted_proxy(monkeypatch):
+    """
+    A client can set X-Forwarded-For to anything. Honouring it from an
+    untrusted peer means one attacker picks a fresh identity per request and
+    the auth limit never applies to them at all.
+    """
+    monkeypatch.setattr(settings, "TRUSTED_PROXIES", "")
+    request = _request_with({"X-Forwarded-For": "1.2.3.4"})
+
+    assert ratelimit._client_ip(request) == "203.0.113.9"
+
+
+def test_forwarded_header_is_honoured_behind_a_trusted_proxy(monkeypatch):
+    """
+    Behind Caddy the real address is only in the header, so trusting it there
+    is what makes per-address limiting work rather than limiting everyone
+    together as the proxy.
+    """
+    monkeypatch.setattr(settings, "TRUSTED_PROXIES", "10.0.0.5")
+    request = _request_with({"X-Forwarded-For": "1.2.3.4, 10.0.0.5"}, "10.0.0.5")
+
+    assert ratelimit._client_ip(request) == "1.2.3.4"
+
+
+def test_the_leftmost_forwarded_entry_is_the_original_client(monkeypatch):
+    monkeypatch.setattr(settings, "TRUSTED_PROXIES", "10.0.0.5")
+    request = _request_with(
+        {"X-Forwarded-For": "1.2.3.4, 5.6.7.8, 10.0.0.5"}, "10.0.0.5"
+    )
+
+    assert ratelimit._client_ip(request) == "1.2.3.4"
+
+
+def test_a_proxy_address_outside_the_trusted_list_is_not_honoured(monkeypatch):
+    monkeypatch.setattr(settings, "TRUSTED_PROXIES", "10.0.0.5")
+    request = _request_with({"X-Forwarded-For": "1.2.3.4"}, client_host="10.0.0.9")
+
+    assert ratelimit._client_ip(request) == "10.0.0.9"
+
+
+def test_an_unparseable_peer_falls_back_to_the_socket_address(monkeypatch):
+    """A malformed TRUSTED_PROXIES entry must not disable the check."""
+    monkeypatch.setattr(settings, "TRUSTED_PROXIES", "not-an-ip")
+    request = _request_with({"X-Forwarded-For": "1.2.3.4"})
+
+    assert ratelimit._client_ip(request) == "203.0.113.9"
+
+
+def test_a_trusted_cidr_range_matches(monkeypatch):
+    """Render's proxy sits in a range, not a single address."""
+    monkeypatch.setattr(settings, "TRUSTED_PROXIES", "10.0.0.0/8")
+    request = _request_with({"X-Forwarded-For": "1.2.3.4"}, client_host="10.1.2.3")
+
+    assert ratelimit._client_ip(request) == "1.2.3.4"
+
+
+def test_an_empty_forwarded_header_falls_back_to_the_socket(monkeypatch):
+    monkeypatch.setattr(settings, "TRUSTED_PROXIES", "10.0.0.5")
+    request = _request_with({"X-Forwarded-For": ""})
+
+    assert ratelimit._client_ip(request) == "203.0.113.9"
+
+
+async def test_a_spoofed_header_cannot_dodge_the_auth_limit(client, monkeypatch):
+    """
+    The end-to-end consequence: a client rotating X-Forwarded-For to look
+    like a new address must still be throttled.
+    """
+    monkeypatch.setattr(settings, "RATE_LIMIT_AUTH_PER_MINUTE", 3)
+    monkeypatch.setattr(settings, "TRUSTED_PROXIES", "")
+
+    codes = [
+        client.post(
+            "/auth/login",
+            json={"username": "nobody", "password": "guess-attempt-1"},
+            headers={"X-Forwarded-For": f"198.51.100.{attempt}"},
+        ).status_code
+        for attempt in range(6)
+    ]
+    assert codes.count(401) == 3
+    assert codes.count(429) == 3
 
 
 # --- enforced on the endpoints --------------------------------------------

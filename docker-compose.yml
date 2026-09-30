@@ -119,6 +119,13 @@ services:
       # and start the `ollama` service below; the API then needs no OpenAI key.
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      # Gemini is the production provider. The key travels with the provider
+      # selection: config validation aborts at import when a gemini provider is
+      # selected without one, so forwarding the selection alone would leave the
+      # documented .env.production.example unable to start this stack.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.6-flash}
+      GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-001}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
@@ -157,8 +164,12 @@ services:
   ui:
     build: .
     restart: unless-stopped
+    # Loopback-bound like every other service: this is the one container that
+    # serves a login form, so publishing it on 0.0.0.0 would expose it to the
+    # internet without Caddy's TLS, HSTS and security headers. The tls profile
+    # is what publishes it publicly.
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
     environment:
       # The UI talks to the API over HTTP and performs no validation of these;
       # they are passed through so a single .env serves every service.
@@ -231,8 +242,14 @@ services:
       - api
       - ui
 
+  # Prometheus, Grafana and node-exporter are opt-in. Compose interpolates the
+  # whole file before starting anything, so a required variable in any of these
+  # aborts the whole stack for an operator who never asked for observability.
+  # Start them with:
+  #   GRAFANA_ADMIN_PASSWORD=... docker compose --profile observability up -d
   prometheus:
     image: prom/prometheus:v2.53.0
+    profiles: ["observability"]
     restart: unless-stopped
     ports:
       - "127.0.0.1:9090:9090"
@@ -250,12 +267,17 @@ services:
 
   grafana:
     image: grafana/grafana:11.1.0
+    profiles: ["observability"]
     restart: unless-stopped
     ports:
       - "127.0.0.1:3000:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      # Cannot be `${GRAFANA_ADMIN_PASSWORD:?...}`: compose interpolates the
+      # whole file before it reads profiles, so requiring it here would abort
+      # the default profile as well. Unset, Grafana falls back to its own
+      # default - which is why this service is opt-in and loopback-bound.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
@@ -271,6 +293,7 @@ services:
 
   node-exporter:
     image: prom/node-exporter:v1.8.1
+    profiles: ["observability"]
     restart: unless-stopped
     ports:
       - "127.0.0.1:9100:9100"

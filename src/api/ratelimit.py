@@ -11,6 +11,7 @@ rate. Without MongoDB the fallback is per-process, which is stated in the
 README rather than papered over.
 """
 
+import ipaddress
 import time
 from dataclasses import dataclass
 
@@ -181,15 +182,34 @@ async def rate_limit_headers(user_id: str, endpoint: str) -> dict[str, str]:
 
 def _client_ip(request: Request) -> str:
     """
-    Best-effort client address.
+    The address to rate limit against.
 
-    X-Forwarded-For is only trusted when a proxy is expected; uvicorn must be
-    run with --forwarded-allow-ips for it to be populated safely.
+    X-Forwarded-For is client-supplied, so it is only believed when the socket
+    peer is a proxy named in TRUSTED_PROXIES. Trusting it unconditionally lets
+    one caller send a different value on every request and never be limited at
+    all, which is the only thing standing between /auth/login and credential
+    guessing.
+
+    uvicorn's --forwarded-allow-ips governs request.client.host; it does not
+    make the raw header trustworthy, which is why this checks the peer itself.
     """
+    peer = request.client.host if request.client else None
     forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+
+    if forwarded and _peer_is_trusted_proxy(peer):
+        return forwarded.split(",")[0].strip() or peer or "unknown"
+    return peer or "unknown"
+
+
+def _peer_is_trusted_proxy(peer: str | None) -> bool:
+    """True when the socket peer is one of the configured proxies."""
+    if not peer:
+        return False
+    try:
+        address = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    return any(address in network for network in settings.trusted_proxies)
 
 
 class _RateLimit:

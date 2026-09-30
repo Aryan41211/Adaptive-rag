@@ -2,10 +2,15 @@
 Prometheus metrics for the Adaptive RAG API.
 
 Exposes a ``/metrics/prometheus`` endpoint in OpenMetrics text format.
-The endpoint is unauthenticated — it is only reachable from inside the
-compose network where Prometheus runs.
+
+The endpoint is unauthenticated *only* when ``METRICS_TOKEN`` is unset, which
+is the case in the compose stack where the API port is published on loopback
+alone and Caddy answers 404 for this path. Render terminates TLS itself and has
+no equivalent edge, so the blueprint sets a token and the route refuses to serve
+without it.
 """
 
+import hmac
 import time
 
 from prometheus_client import (
@@ -109,13 +114,39 @@ async def request_metrics_middleware(request: Request, call_next):
 
 
 # --- Endpoint ---
-from fastapi import APIRouter  # noqa: E402
+from fastapi import APIRouter, HTTPException, Request  # noqa: E402
 
 metrics_router = APIRouter(tags=["metrics"])
 
 
+def _token_is_valid(supplied: str | None) -> bool:
+    """
+    Compare the caller's token against the configured one.
+
+    hmac.compare_digest rather than `==` so the comparison time does not leak
+    how much of the token was correct.
+    """
+    expected = settings.METRICS_TOKEN
+    if not expected:
+        return True
+    if not supplied:
+        return False
+    return hmac.compare_digest(supplied, expected)
+
+
 @metrics_router.get("/metrics/prometheus")
-async def prometheus_metrics() -> Response:
+async def prometheus_metrics(request: Request) -> Response:
     """Expose Prometheus metrics in OpenMetrics text format."""
+    header = request.headers.get("Authorization", "")
+    supplied = header[7:].strip() if header.startswith("Bearer ") else None
+
+    if not _token_is_valid(supplied):
+        # The body deliberately says nothing about the expected value.
+        raise HTTPException(
+            status_code=401,
+            detail="Metrics are protected; set a valid METRICS_TOKEN.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     output = generate_latest(registry) if registry is not None else generate_latest()
     return Response(content=output, media_type=CONTENT_TYPE_LATEST)

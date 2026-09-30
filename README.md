@@ -864,12 +864,26 @@ Brings up the API (`:8000`), the Streamlit UI (`:8501`), Qdrant and MongoDB.
 The API waits for Qdrant and MongoDB to report healthy before starting, so it
 never boots into its non-durable fallbacks by accident.
 
+Prometheus, Grafana and node-exporter are opt-in, so that first command does
+not need credentials for a dashboard nobody asked for:
+
+```bash
+GRAFANA_ADMIN_PASSWORD=... docker compose --profile observability up -d
+```
+
+It is not a required variable, because compose interpolates the whole file
+before it reads profiles — a hard requirement in an opt-in service would abort
+the default profile too.
+
 MongoDB requires authentication: compose refuses to start without
-`MONGO_ROOT_PASSWORD` rather than leaving the database open. The API and both
-data stores publish on `127.0.0.1` only — bound to `0.0.0.0` they would be
+`MONGO_ROOT_PASSWORD` rather than leaving the database open. The API, the UI and
+both data stores publish on `127.0.0.1` only — bound to `0.0.0.0` they would be
 reachable from anywhere that can route to the host, which on a cloud VM means
-the internet. The API also serves `/docs`, `/redoc`, `/openapi.json` while
-`ENABLE_API_DOCS` is true and the unauthenticated `/metrics/prometheus`, and
+the internet. The UI is included in that rule because it is the one service
+serving a login form: without the `tls` profile it was the only route to the
+app that bypassed Caddy's security headers. The API also serves `/docs`,
+`/redoc`, `/openapi.json` while `ENABLE_API_DOCS` is true and the unauthenticated
+`/metrics/prometheus`, and
 it runs uvicorn with `--forwarded-allow-ips`, which would trust a spoofed
 `X-Forwarded-For` off the loopback interface — public traffic goes through
 the Caddy edge instead. Containers reach each other over the compose network,
@@ -910,9 +924,10 @@ Python Streamlit UI) and keeps every credential out of the repository.
    `MONGODB_URL` (`mongodb+srv://USER:PASSWORD@CLUSTER.mongodb.net/?retryWrites=true&w=majority`),
    and `API_BASE_URL` (the deployed API's live URL, e.g. `https://adaptive-rag-api.onrender.com`).
    `JWT_SECRET_KEY` is generated for you once and kept in the dashboard.
-4. **Harden once it is up**: set `ALLOWED_HOSTS` to your `.onrender.com`
-   hostname (the default `*` answers any Host header) and confirm
-   `ENABLE_API_DOCS=false`.
+4. **Harden once it is up**: `ALLOWED_HOSTS` and `METRICS_TOKEN` are already set
+   by the blueprint, and `ENABLE_API_DOCS=false`. If you attach a custom domain,
+   add it to `ALLOWED_HOSTS`. Read `METRICS_TOKEN` from the dashboard to scrape
+   `/metrics/prometheus`; without it the endpoint answers 401.
 
 What the free tier cannot do:
 
@@ -976,11 +991,18 @@ Encrypt certificate automatically, redirects HTTP to HTTPS, and sets HSTS,
 `X-Content-Type-Options`, `X-Frame-Options` and `Referrer-Policy`. It forwards
 the real client address, which the rate limiter keys on.
 
+`X-Forwarded-For` is client-supplied, so the limiter believes it only when the
+socket peer is listed in `TRUSTED_PROXIES` — empty trusts nobody, which would
+otherwise let a caller present a fresh identity per request and never be
+limited. Behind Caddy, set it to the compose network range (`172.16.0.0/12`).
+
 `/docs`, `/redoc` and `/openapi.json` return 404 at this edge, as does
 `/metrics/prometheus`. The schema enumerates every endpoint, parameter and
 payload shape, which is a map of the attack surface; reach it on the host's
 loopback API port (`127.0.0.1:8000`), or delete that block in
-`deploy/Caddyfile` to publish it deliberately.
+`deploy/Caddyfile` to publish it deliberately. A platform that terminates TLS
+itself has no such edge, so set `METRICS_TOKEN` there — without it the endpoint
+answers 401.
 
 Use `DOMAIN=localhost` to try it locally; Caddy then issues an internal
 certificate rather than contacting Let's Encrypt.
