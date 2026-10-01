@@ -344,13 +344,25 @@ mypy src/
 ```
 
 ### Linting
-```bash
-# Run pylint
-pylint src/
+Ruff is the project's linter and formatter; it is what CI enforces. The rule
+selection lives in `pyproject.toml`.
 
-# Run flake8 with specific checks
-flake8 src/ --select=E,W,F
+```bash
+# Lint
+ruff check .
+
+# Lint and fix what can be fixed automatically
+ruff check --fix .
+
+# Format, and verify formatting without changing files
+ruff format .
+ruff format --check .
 ```
+
+The equivalents these replace, for reference if you are porting a command from
+another project: `ruff check --select E,W,F` covers what `flake8 --select=E,W,F`
+did, and `ruff format` covers `black`. Neither black nor flake8 nor pylint is a
+dependency here, so invoking them directly will not work.
 
 ## Project-Specific Guidelines
 

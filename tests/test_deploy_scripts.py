@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from prometheus_client.metrics import MetricWrapperBase
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 SCRIPTS = [DEPLOY / "backup.sh", DEPLOY / "restore.sh"]
@@ -363,6 +364,22 @@ def test_render_metrics_endpoint_is_not_publicly_readable():
     ), "METRICS_TOKEN is unset on the public API"
 
 
+def test_render_declares_the_web_search_key_the_graph_routes_to():
+    """
+    The agent graph routes questions to a web_search node. With no
+    TAVILY_API_KEY that node returns "web search is not configured on this
+    deployment" to every user who asks anything current, and the graph's
+    web_search -> generate edge is dead code on the one deployment this
+    repository documents as production.
+
+    Declared with sync:false, so Render prompts for it at deploy time and the
+    choice is visible. Left blank it degrades exactly as it does now.
+    """
+    assert "TAVILY_API_KEY" in render_env(
+        "adaptive-rag-api"
+    ), "the web_search branch is unreachable on the Render blueprint"
+
+
 # --- exposure boundary ------------------------------------------------------
 @pytest.mark.parametrize(
     "service",
@@ -445,3 +462,306 @@ def test_compose_forwards_the_settings_the_application_actually_reads(variable):
     assert (
         variable in environment
     ), f"{variable} is documented but never passed to the api container"
+
+
+def test_compose_mounts_the_secrets_directory_the_application_reads():
+    """
+    src.core.config points pydantic-settings at /run/secrets, and the README
+    and .env.production.example both tell operators to put credentials in
+    Docker secrets. Nothing ever mounted that directory, so a file placed
+    there was invisible and the stack silently fell back to .env values -
+    worse than not offering file-based secrets at all, because the operator
+    believes the rotation took effect.
+    """
+    volumes = compose()["services"]["api"].get("volumes", [])
+    mounts = [volume for volume in volumes if "/run/secrets" in str(volume)]
+    assert mounts, "/run/secrets is read by src.core.config but never mounted"
+    for mount in mounts:
+        # Read-only: the container has no business rewriting a credential.
+        assert str(mount).rstrip().endswith(":ro"), f"{mount} is writable"
+
+
+def test_the_secrets_mount_is_optional_rather_than_required():
+    """
+    Long syntax with `required: true` would fail startup when the directory is
+    absent, breaking the documented out-of-the-box first run. The short
+    bind-mount form creates an empty root-owned directory instead, which is
+    the correct "no secrets configured" default.
+    """
+    volumes = compose()["services"]["api"].get("volumes", [])
+    secret_mounts = [volume for volume in volumes if "/run/secrets" in str(volume)]
+    assert secret_mounts
+    for mount in secret_mounts:
+        assert not isinstance(
+            mount, dict
+        ), f"{mount} uses long syntax, which would make the directory required"
+
+
+def test_credentials_written_to_the_secrets_directory_cannot_be_committed():
+    """
+    The README tells operators to write real credentials into
+    deploy/secrets/. If that directory is not ignored, following the
+    documentation is enough to put a live API key into git history, where
+    removing it later does not remove it.
+
+    Asserted through `git check-ignore` rather than by reading .gitignore,
+    because what matters is the effective result after all the rules are
+    applied in order - not what any single line appears to say.
+    """
+    if shutil.which("git") is None:
+        pytest.skip("git is not available")
+
+    probe = "deploy/secrets/probe_credential_check_only"
+    completed = subprocess.run(
+        ["git", "check-ignore", "-q", probe],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, (
+        f"{probe} is not gitignored; following the documented Secrets section "
+        "would put a live credential into the index"
+    )
+
+
+def test_the_secrets_directory_survives_a_fresh_clone():
+    """
+    The compose bind mount targets ./deploy/secrets. If the directory is
+    ignored wholesale - rather than ignored except for a placeholder - a fresh
+    clone has no such directory, and Compose creates it root-owned, which then
+    cannot be written to by the operator who needs to add a credential.
+    """
+    assert (DEPLOY / "secrets" / ".gitkeep").is_file(), (
+        "deploy/secrets/.gitkeep must be tracked so the directory exists in a "
+        "fresh clone and the bind mount resolves to a writable path"
+    )
+
+
+def test_worker_count_matches_the_metrics_processing_mode():
+    """
+    The multiprocess Prometheus registry only engages when
+    PROMETHEUS_MULTIPROC_DIR names a real directory. With one worker the
+    default registry is correct and the variable is left empty, which is what
+    this pins: raising the worker count without also setting that variable
+    makes /metrics report only whichever worker happened to answer the scrape,
+    and the numbers look plausible while being wrong.
+    """
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    assert "--workers" in dockerfile, "no --workers setting in the Dockerfile CMD"
+    count = dockerfile.split("--workers")[1].split()[0]
+    assert count == "1", (
+        f"the image runs {count} workers; PROMETHEUS_MULTIPROC_DIR must be set "
+        "before start or per-process metrics will be incomplete"
+    )
+
+    environment = compose()["services"]["api"].get("environment", {})
+    assert "PROMETHEUS_MULTIPROC_DIR" in environment, (
+        "the multiprocess directory is not forwarded, so scaling past one "
+        "worker cannot be configured without editing compose"
+    )
+    # Empty by default, which is correct while the image runs a single worker.
+    assert str(environment["PROMETHEUS_MULTIPROC_DIR"]).endswith(":-}"), (
+        "PROMETHEUS_MULTIPROC_DIR must default to empty; the single-worker "
+        "image should use the default registry"
+    )
+
+
+def test_stale_multiprocess_metric_files_are_cleared_on_start():
+    """
+    prometheus_client writes per-process counter shards into
+    PROMETHEUS_MULTIPROC_DIR and never removes them. A directory that survives
+    a restart makes every run re-add the previous run's totals, so counters
+    climb forever while still looking like real data.
+    """
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        "PROMETHEUS_MULTIPROC_DIR" in dockerfile
+    ), "the Dockerfile never references the multiprocess directory"
+    cmd = dockerfile.split("CMD [", 1)[1]
+    assert "-delete" in cmd or "-exec rm" in cmd, (
+        "the multiprocess directory is not cleared before uvicorn starts, so "
+        "counters accumulate across restarts"
+    )
+
+
+def test_prometheus_scrapes_the_endpoint_the_stack_exposes():
+    """
+    Alert rules are only useful if the target they evaluate actually has data.
+    """
+    prometheus = (DEPLOY / "prometheus" / "prometheus.yml").read_text(encoding="utf-8")
+    assert "api:8000" in prometheus, "prometheus does not scrape the api service"
+    assert "metrics/prometheus" in prometheus
+
+
+def test_alert_rules_are_loaded_and_cover_the_failing_signals():
+    """
+    An alerting rule file that exists but is not referenced by prometheus.yml is
+    never evaluated, and Prometheus starts up perfectly happily - the failure
+    mode is silence. These checks make the wiring explicit rather than trusting
+    the mount to line up.
+    """
+    prometheus = (DEPLOY / "prometheus" / "prometheus.yml").read_text(encoding="utf-8")
+    rules = yaml.safe_load((DEPLOY / "prometheus" / "alerts.yml").read_text("utf-8"))
+
+    assert "rule_files" in prometheus, "prometheus.yml has no rule_files section"
+    for entry in rules["groups"]:
+        for path in entry.get("files", []):
+            assert (
+                "alerts.yml" in path or "rules.yml" in path
+            ), f"rule_files entry {path} does not point at the shipped rules"
+
+    alerts = [rule for group in rules["groups"] for rule in group["rules"]]
+    assert alerts, "no alert rules defined"
+    for rule in alerts:
+        assert rule.get("expr", "").strip(), f"{rule.get('alert')} has no expression"
+        assert rule.get("for", "").strip(), (
+            f"{rule.get('alert')} fires instantly; alert fatigue trains people "
+            "to ignore the channel"
+        )
+        assert {"alert", "expr"} <= set(rule), f"{rule} is missing required fields"
+
+    names = {rule["alert"] for rule in alerts}
+    # The signals that matter here: the service is down, it is erroring, it is
+    # slow, it is rejecting uploads, or nobody is using it.
+    assert any(
+        "upload" in name.lower() for name in names
+    ), "no alert covers document upload, the feature the service exists for"
+    assert any("error" in name.lower() for name in names)
+    assert any("down" in name.lower() for name in names)
+    assert any(
+        "memory" in name.lower() or "disk" in name.lower() for name in names
+    ), "no host saturation alert; MongoDB and Qdrant fail before the OOM killer"
+
+
+def test_every_rag_metric_an_alert_reads_is_actually_exported():
+    """
+    A PromQL expression naming a series the application never exports is
+    syntactically valid and permanently empty, so the rule looks configured
+    and silently never fires. That is the worst possible alerting failure:
+    the channel stays quiet because nothing was ever compared to a threshold.
+
+    A typo is all it takes - `rag_request_latency_seconds` against the real
+    `rag_request_duration_seconds` - which is exactly the mistake this check
+    was written for.
+    """
+    import re
+
+    from src.api import metrics as metrics_module
+
+    exported = set()
+    for name in dir(metrics_module):
+        metric = getattr(metrics_module, name, None)
+        if isinstance(metric, MetricWrapperBase):
+            # A Counter is declared as `rag_requests_total` but stores its stem
+            # internally, while a Gauge keeps its name verbatim - so both
+            # spellings are added. `_bucket`/`_sum`/`_count` are generated by
+            # the client rather than declared, and PromQL uses them directly.
+            exported.add(metric._name)
+            exported.add(f"{metric._name}_total")
+            exported.add(f"{metric._name}_bucket")
+
+    rules = yaml.safe_load((DEPLOY / "prometheus" / "alerts.yml").read_text("utf-8"))
+    referenced = set()
+    for group in rules["groups"]:
+        for rule in group["rules"]:
+            referenced |= set(re.findall(r"rag_[a-z_]+", rule["expr"]))
+
+    unknown = {name for name in referenced if name not in exported}
+    assert not unknown, f"alerts reference metrics the app never exports: {unknown}"
+
+
+# --- live provider probes in CI --------------------------------------------
+def ci_workflow() -> dict:
+    path = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def ci_triggers() -> dict:
+    """
+    The workflow's `on:` block.
+
+    YAML 1.1 reads a bare `on` as the boolean true, so PyYAML hands it back
+    under the key True. GitHub Actions parses it correctly; this is purely an
+    artefact of reading the file locally.
+    """
+    workflow = ci_workflow()
+    return workflow.get("on", workflow.get(True, {}))
+
+
+def test_the_live_probe_suite_runs_somewhere_in_ci():
+    """
+    tests_live talks to a real provider, so pytest.ini excludes it from the
+    default run. Without a job that names it explicitly, those probes are
+    dead code that only ever passes on one developer's machine - the exact
+    drift this repository's other CI guards exist to prevent.
+    """
+    live = ci_workflow()["jobs"].get("live-tests")
+    assert live, "no CI job runs tests_live"
+
+    steps = yaml.safe_dump(live)
+    assert "tests_live" in steps, "the live-tests job never invokes tests_live"
+
+
+def test_live_probes_never_run_on_untrusted_pull_requests():
+    """
+    Pull requests from forks cannot read repository secrets, so the probes
+    would skip themselves and report a green run that proved nothing. Worse, a
+    workflow triggered on pull_request_target can be made to exfiltrate a
+    secret by a contributor. The job is restricted to pushes on main, a
+    schedule, and manual dispatch.
+    """
+    triggers = ci_triggers()
+    assert (
+        "pull_request_target" not in triggers
+    ), "pull_request_target would expose repository secrets to fork authors"
+
+    live = ci_workflow()["jobs"]["live-tests"]
+    guard = live.get("if", "")
+    assert (
+        "pull_request" not in guard
+    ), "the live-tests job has no guard keeping it off pull requests"
+    # Every event the workflow itself listens for must be accounted for by the
+    # job guard, otherwise a newly added trigger silently starts running
+    # secret-dependent probes.
+    assert "github.event_name" in guard, (
+        "guard the live-tests job by event name so a new trigger cannot "
+        "silently start running secret-dependent probes"
+    )
+
+
+def test_every_event_the_live_job_guards_on_is_a_real_workflow_trigger():
+    """
+    A job guard naming an event the workflow never listens for is dead code
+    that reads like coverage. The guard exists to allow push, schedule and
+    manual dispatch; if the schedule trigger is dropped, the job quietly stops
+    running weekly and nothing reports the loss.
+    """
+    triggers = set(ci_triggers())
+    guard = ci_workflow()["jobs"]["live-tests"].get("if", "")
+    named = {
+        event
+        for event in ("push", "pull_request", "schedule", "workflow_dispatch")
+        if f"github.event_name == '{event}'" in guard
+    }
+    assert named <= triggers, f"guard names events with no trigger: {named - triggers}"
+    assert "schedule" in triggers, (
+        "the live probes only run weekly via schedule; without it they see "
+        "provider breakage only when someone happens to push"
+    )
+
+
+def test_the_publish_job_does_not_wait_on_the_free_tier_live_probes():
+    """
+    The live probes hit a free tier that intermittently answers 429 and then
+    skips. Gating the image publish on them would mean a quota pause silently
+    blocks releases, which is the wrong trade: the offline suite and the image
+    smoke test already cover correctness.
+    """
+    publish = ci_workflow()["jobs"]["publish"]["needs"]
+    assert (
+        "live-tests" not in publish
+    ), "a free-tier quota skip must not be able to block an image publish"

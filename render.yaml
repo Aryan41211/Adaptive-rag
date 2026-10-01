@@ -60,6 +60,13 @@ services:
         sync: false
       - key: MONGODB_DB_NAME
         value: adaptive_rag
+      # The graph routes questions to a web_search node. Without this key that
+      # node answers "web search is not configured on this deployment" to
+      # anyone asking anything current. sync:false makes Render prompt for it,
+      # so the choice is visible at deploy time; leaving it blank degrades to
+      # the same message rather than failing.
+      - key: TAVILY_API_KEY
+        sync: false
       # Hardening for the public endpoint; API docs would reveal the schema.
       - key: ENABLE_API_DOCS
         value: "false"

@@ -1,13 +1,58 @@
+[build-system]
+# Declared explicitly rather than relying on pip's legacy fallback, which
+# ignores the rest of this file and then autodiscovers `src`'s children as
+# top-level packages.
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "adaptive-rag"
 version = "1.0.0"
 description = "Agentic RAG service with per-user document isolation"
 requires-python = ">=3.10"
+# Read from requirements.txt so the pinned LangChain family documented in
+# ADR-001 cannot drift away from the package metadata. Duplicating the list
+# here is how that drift happens.
+dynamic = ["dependencies"]
+
+[project.urls]
+Documentation = "https://github.com/Aryan41211/Adaptive-rag/blob/main/README.md"
+
+[tool.setuptools]
+# Every import in this codebase is written as `from src.<module>`, so the
+# `src` prefix has to survive into the wheel. Left to autodiscovery,
+# setuptools treats src/ as the package root and installs api/, core/,
+# models/, rag/, tools/ and config/ as top-level names - which shadow
+# unrelated packages and make `import src.main` fail after installing.
+#
+# streamlit_app is deliberately absent: it is an entrypoint, not a library,
+# and shipping it would pull Streamlit into every install of this package.
+packages = [
+    "src",
+    "src.api",
+    "src.config",
+    "src.core",
+    "src.db",
+    "src.llms",
+    "src.memory",
+    "src.models",
+    "src.rag",
+    "src.tools",
+]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.package-data]
+"src" = ["py.typed"]
 
 [tool.ruff]
 line-length = 88
 target-version = "py310"
-exclude = [".venv", "venv", "__pycache__", ".git"]
+# build/ and dist/ hold a second copy of the source tree produced by
+# `python -m build`. Linting them reports errors in files nobody edits and
+# formatting them rewrites the build output on every run.
+exclude = [".venv", "venv", "__pycache__", ".git", "build", "dist", ".kilo"]
 
 [tool.ruff.lint]
 select = [

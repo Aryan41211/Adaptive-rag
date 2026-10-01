@@ -111,6 +111,14 @@ services:
     # Public traffic goes through the tls profile's Caddy edge instead.
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      # src.core.config points pydantic-settings at this directory, so a file
+      # named after a setting wins over .env and keeps the value out of the
+      # process environment, where `docker inspect` and crash dumps can read
+      # it back. Short syntax on purpose: long syntax with required:true would
+      # fail startup when the directory is absent, breaking a first run.
+      # Create ./deploy/secrets/ and drop files in it (see the README).
+      - ./deploy/secrets:/run/secrets:ro
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       # Free local mode: set LLM_PROVIDER and EMBEDDING_PROVIDER to "ollama"
@@ -147,6 +155,12 @@ services:
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12,127.0.0.1/8}
       # Empty in the default profile, where /metrics is loopback-reachable only.
       METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # Only needed if you raise --workers above 1 in the Dockerfile: with more
+      # than one worker each process keeps its own counters, so the default
+      # registry reports only whichever worker answered the scrape. Empty here
+      # is correct for the single-worker image, and the Dockerfile clears this
+      # directory on start so counters never accumulate across restarts.
+      PROMETHEUS_MULTIPROC_DIR: ${PROMETHEUS_MULTIPROC_DIR:-}
     depends_on:
       qdrant:
         condition: service_healthy
@@ -261,6 +275,10 @@ services:
       - "127.0.0.1:9090:9090"
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Paired with rule_files in prometheus.yml. Without this the rules load
+      # from a path that does not exist inside the container, Prometheus logs a
+      # file-not-found, and nothing is ever evaluated - a silent failure.
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus_data:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml

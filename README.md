@@ -157,7 +157,7 @@ Adaptive-Rag/
 │   ├── pages/chat.py                 # Chat and document upload
 │   └── utils/api_client.py           # Typed API client with timeouts
 │
-├── tests/                            # 454 tests (pytest)
+├── tests/                           # Offline suite (pytest); see docs for live probes
 │   ├── conftest.py                   # Fixtures, fakes, state reset
 │   ├── test_config.py                # Settings validation
 │   ├── test_security.py              # Hashing and JWT
@@ -882,13 +882,21 @@ reachable from anywhere that can route to the host, which on a cloud VM means
 the internet. The UI is included in that rule because it is the one service
 serving a login form: without the `tls` profile it was the only route to the
 app that bypassed Caddy's security headers. The API also serves `/docs`,
-`/redoc`, `/openapi.json` while `ENABLE_API_DOCS` is true and the unauthenticated
-`/metrics/prometheus`, and
-it runs uvicorn with `--forwarded-allow-ips`, which would trust a spoofed
-`X-Forwarded-For` off the loopback interface — public traffic goes through
-the Caddy edge instead. Containers reach each other over the compose network,
-which those port mappings play no part in; they exist for `deploy/backup.sh`
-and local tooling.
+`/redoc`, `/openapi.json` while `ENABLE_API_DOCS` is true and the
+unauthenticated `/metrics/prometheus`, so public traffic goes through the
+Caddy edge instead.
+
+The image deliberately starts uvicorn with `--no-proxy-headers`. Allowing
+forwarded headers would make uvicorn overwrite `request.client.host` from the
+client-supplied `X-Forwarded-For` before the application saw the request, and
+the rate limiter would then key on a value the caller chose — which is the only
+thing standing between `/auth/login` and credential guessing. Trust is decided
+by the application instead, from the raw socket peer, against
+`TRUSTED_PROXIES`. Under Compose that defaults to Docker's bridge range so the
+Caddy container can speak for a caller; narrow it to your actual network.
+
+Containers reach each other over the compose network, which those port
+mappings play no part in; they exist for `deploy/backup.sh` and local tooling.
 
 The credentials are applied only when the `mongo_data` volume is first
 created. Turning authentication on for a stack that has already run means:
@@ -972,9 +980,22 @@ convention used by Docker secrets, Kubernetes secret volumes and most secret
 managers. This keeps credentials out of the process environment, where
 `docker inspect`, a crash dump and every child process can read them back.
 
+Under Compose, `./deploy/secrets` is bind-mounted to `/run/secrets` read-only.
+Create it and drop files in it, named after the setting in lower case:
+
 ```bash
-printf 'sk-...' | docker secret create openai_api_key -
+mkdir -p deploy/secrets
+printf 'sk-...' > deploy/secrets/openai_api_key
+printf 'long-random-value' > deploy/secrets/jwt_secret_key
+chmod 600 deploy/secrets/*
 ```
+
+`deploy/secrets/` is gitignored, so credentials committed by accident are not a
+git problem — but the directory is still yours to protect on the host.
+
+> `docker secret create` is a **Swarm** command and has no effect on
+> `docker compose up`. Use the bind mount above; this is what the shipped
+> `docker-compose.yml` wires up.
 
 Environment variables win when both are present, and a missing directory is
 ignored, so the default is safe to leave alone off-container.
@@ -1161,7 +1182,8 @@ Contributions are welcome! Please follow these steps:
 - Add docstrings to all functions
 - Write unit tests for new features
 - Update documentation
-- Run linting: `flake8 src/`
+- Run the checks CI runs: `ruff check .`, `ruff format --check .`,
+  `scripts/check_lock.py`, `pytest`
 
 ---
 
@@ -1282,7 +1304,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - ✅ CI: lint, tests on two Python versions, and a Docker build smoke test
 - ✅ **Fully local mode** — chat and embeddings via Ollama with no API key,
   including a keyless Compose profile with a bundled Ollama sidecar
-- ✅ Automated test suite (478 tests, 94% coverage of `src/`)
+- ✅ Automated test suite with 94% coverage of `src/` (run `pytest --cov=src` for
+  the current count and coverage; both move with every change)
 
 ### Not yet done
 

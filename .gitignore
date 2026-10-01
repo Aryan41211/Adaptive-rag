@@ -3,8 +3,17 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
 .coverage
+coverage.xml
 htmlcov/
+# Packaging output. `python -m build` writes a copy of the source tree here,
+# so without this the linter and formatter also process build artifacts and
+# a second, stale copy of the source ends up committed.
+build/
+dist/
+/artifacts/
+.deepeval/
 
 # Virtual environments
 venv/
@@ -14,6 +23,11 @@ env/
 # Secrets & local config
 .env
 .env.local
+# File-based secrets, bind-mounted to /run/secrets by docker-compose.yml.
+# Credentials written here must never reach the index; only the directory
+# placeholder is tracked.
+deploy/secrets/*
+!deploy/secrets/.gitkeep
 
 # IDE
 .idea/

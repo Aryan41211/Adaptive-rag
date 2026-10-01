@@ -220,21 +220,27 @@ def calculate_total(price: float, tax: float) -> float:
 
 ## 🛠️ Quick Commands
 
+Ruff is the project's linter and formatter, and it is what CI enforces. The
+rule selection lives in `pyproject.toml`.
+
 ```bash
-# Format with Black
-black src/
+# Format (a black equivalent)
+ruff format .
 
-# Sort imports
-isort src/
+# Verify formatting without changing files
+ruff format --check .
 
-# Check style
-flake8 src/
+# Lint (covers flake8 --select E,W,F and isort's import sorting)
+ruff check .
 
-# Type checking
-mypy src/
+# Dependency lock is in step with requirements.txt
+python scripts/check_lock.py
 
-# Lint check
-pylint src/
+# Tests
+pytest
+
+# The real provider probes, which need GEMINI_API_KEY in .env
+pytest tests_live
 ```
 
 ## 📞 Common Issues
@@ -278,10 +284,10 @@ def calculate_doubled_value(value: int) -> int:
 ## 📚 Full Guides
 
 For detailed information, see:
+- **README.md** - Architecture, configuration, deployment
 - **CODE_STYLE_GUIDE.md** - Complete style guide
-- **FORMATTING_SUMMARY.md** - All changes made
-- **README_FORMATTING.md** - Overview and statistics
-- **VERIFICATION_CHECKLIST.md** - Complete checklist
+- **DOCUMENT_UPLOAD_FLOW.md** - How an upload becomes embedded chunks
+- `docs/ADR-001-langchain-version.md` - Why the LangChain pins are exact
 
 ## 🎯 Remember
 
