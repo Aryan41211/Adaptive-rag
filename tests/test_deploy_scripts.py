@@ -364,6 +364,22 @@ def test_render_metrics_endpoint_is_not_publicly_readable():
     ), "METRICS_TOKEN is unset on the public API"
 
 
+def test_render_declares_the_web_search_key_the_graph_routes_to():
+    """
+    The agent graph routes questions to a web_search node. With no
+    TAVILY_API_KEY that node returns "web search is not configured on this
+    deployment" to every user who asks anything current, and the graph's
+    web_search -> generate edge is dead code on the one deployment this
+    repository documents as production.
+
+    Declared with sync:false, so Render prompts for it at deploy time and the
+    choice is visible. Left blank it degrades exactly as it does now.
+    """
+    assert "TAVILY_API_KEY" in render_env(
+        "adaptive-rag-api"
+    ), "the web_search branch is unreachable on the Render blueprint"
+
+
 # --- exposure boundary ------------------------------------------------------
 @pytest.mark.parametrize(
     "service",
