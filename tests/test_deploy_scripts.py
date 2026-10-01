@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from prometheus_client.metrics import MetricWrapperBase
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 SCRIPTS = [DEPLOY / "backup.sh", DEPLOY / "restore.sh"]
@@ -518,3 +519,161 @@ def test_the_secrets_directory_survives_a_fresh_clone():
         "deploy/secrets/.gitkeep must be tracked so the directory exists in a "
         "fresh clone and the bind mount resolves to a writable path"
     )
+
+
+def test_worker_count_matches_the_metrics_processing_mode():
+    """
+    The multiprocess Prometheus registry only engages when
+    PROMETHEUS_MULTIPROC_DIR names a real directory. With one worker the
+    default registry is correct and the variable is left empty, which is what
+    this pins: raising the worker count without also setting that variable
+    makes /metrics report only whichever worker happened to answer the scrape,
+    and the numbers look plausible while being wrong.
+    """
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    assert "--workers" in dockerfile, "no --workers setting in the Dockerfile CMD"
+    count = dockerfile.split("--workers")[1].split()[0]
+    assert count == "1", (
+        f"the image runs {count} workers; PROMETHEUS_MULTIPROC_DIR must be set "
+        "before start or per-process metrics will be incomplete"
+    )
+
+    environment = compose()["services"]["api"].get("environment", {})
+    assert "PROMETHEUS_MULTIPROC_DIR" in environment, (
+        "the multiprocess directory is not forwarded, so scaling past one "
+        "worker cannot be configured without editing compose"
+    )
+    # Empty by default, which is correct while the image runs a single worker.
+    assert str(environment["PROMETHEUS_MULTIPROC_DIR"]).endswith(":-}"), (
+        "PROMETHEUS_MULTIPROC_DIR must default to empty; the single-worker "
+        "image should use the default registry"
+    )
+
+
+def test_stale_multiprocess_metric_files_are_cleared_on_start():
+    """
+    prometheus_client writes per-process counter shards into
+    PROMETHEUS_MULTIPROC_DIR and never removes them. A directory that survives
+    a restart makes every run re-add the previous run's totals, so counters
+    climb forever while still looking like real data.
+    """
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        "PROMETHEUS_MULTIPROC_DIR" in dockerfile
+    ), "the Dockerfile never references the multiprocess directory"
+    cmd = dockerfile.split("CMD [", 1)[1]
+    assert "-delete" in cmd or "-exec rm" in cmd, (
+        "the multiprocess directory is not cleared before uvicorn starts, so "
+        "counters accumulate across restarts"
+    )
+
+
+def test_prometheus_scrapes_the_endpoint_the_stack_exposes():
+    """
+    Alert rules are only useful if the target they evaluate actually has data.
+    """
+    prometheus = (DEPLOY / "prometheus" / "prometheus.yml").read_text(encoding="utf-8")
+    assert "api:8000" in prometheus, "prometheus does not scrape the api service"
+    assert "metrics/prometheus" in prometheus
+
+
+def test_alert_rules_are_loaded_and_cover_the_failing_signals():
+    """
+    An alerting rule file that exists but is not referenced by prometheus.yml is
+    never evaluated, and Prometheus starts up perfectly happily - the failure
+    mode is silence. These checks make the wiring explicit rather than trusting
+    the mount to line up.
+    """
+    prometheus = (DEPLOY / "prometheus" / "prometheus.yml").read_text(encoding="utf-8")
+    rules = yaml.safe_load((DEPLOY / "prometheus" / "alerts.yml").read_text("utf-8"))
+
+    # Parse rather than substring-match: "rule_files" appearing anywhere in the
+    # file says nothing about whether the shipped rules are the ones loaded.
+    rule_files = yaml.safe_load(prometheus).get("rule_files") or []
+    assert rule_files, "prometheus.yml has no rule_files section"
+    assert any(
+        "alerts.yml" in str(path) for path in rule_files
+    ), f"rule_files {rule_files} never loads the shipped alerts.yml"
+
+    alerts = [rule for group in rules["groups"] for rule in group["rules"]]
+    assert alerts, "no alert rules defined"
+    for rule in alerts:
+        assert rule.get("expr", "").strip(), f"{rule.get('alert')} has no expression"
+        assert rule.get("for", "").strip(), (
+            f"{rule.get('alert')} fires instantly; alert fatigue trains people "
+            "to ignore the channel"
+        )
+        assert {"alert", "expr"} <= set(rule), f"{rule} is missing required fields"
+
+    names = {rule["alert"] for rule in alerts}
+    # The signals that matter here: the service is down, it is erroring, it is
+    # slow, it is rejecting uploads, or nobody is using it.
+    assert any(
+        "upload" in name.lower() for name in names
+    ), "no alert covers document upload, the feature the service exists for"
+    assert any("error" in name.lower() for name in names)
+    assert any("down" in name.lower() for name in names)
+    assert any(
+        "memory" in name.lower() or "disk" in name.lower() for name in names
+    ), "no host saturation alert; MongoDB and Qdrant fail before the OOM killer"
+
+
+def test_rule_groups_only_use_keys_prometheus_accepts():
+    """
+    Prometheus unmarshals a rule group strictly. An unrecognised key fails
+    `promtool check rules` and takes the entire file with it, so one stray key
+    silently disables every rule in it rather than just the broken one.
+
+    `files` belongs to prometheus.yml's rule_files, never to a group. Written
+    inside a group it looks plausible enough to survive review and is inert
+    until the container is restarted with the rules mounted.
+    """
+    rules = yaml.safe_load((DEPLOY / "prometheus" / "alerts.yml").read_text("utf-8"))
+    allowed = {"name", "interval", "limit", "labels", "rules"}
+    for group in rules["groups"]:
+        unexpected = set(group) - allowed
+        assert not unexpected, (
+            f"rule group {group.get('name')!r} uses keys Prometheus rejects: "
+            f"{sorted(unexpected)}"
+        )
+
+
+def test_every_rag_metric_an_alert_reads_is_actually_exported():
+    """
+    A PromQL expression naming a series the application never exports is
+    syntactically valid and permanently empty, so the rule looks configured
+    and silently never fires. That is the worst possible alerting failure:
+    the channel stays quiet because nothing was ever compared to a threshold.
+
+    A typo is all it takes - `rag_request_latency_seconds` against the real
+    `rag_request_duration_seconds` - which is exactly the mistake this check
+    was written for.
+    """
+    import re
+
+    from src.api import metrics as metrics_module
+
+    exported = set()
+    for name in dir(metrics_module):
+        metric = getattr(metrics_module, name, None)
+        if isinstance(metric, MetricWrapperBase):
+            # A Counter is declared as `rag_requests_total` but stores its stem
+            # internally, while a Gauge keeps its name verbatim - so both
+            # spellings are added. `_bucket`/`_sum`/`_count` are generated by
+            # the client rather than declared, and PromQL uses them directly.
+            exported.add(metric._name)
+            exported.add(f"{metric._name}_total")
+            exported.add(f"{metric._name}_bucket")
+
+    rules = yaml.safe_load((DEPLOY / "prometheus" / "alerts.yml").read_text("utf-8"))
+    referenced = set()
+    for group in rules["groups"]:
+        for rule in group["rules"]:
+            referenced |= set(re.findall(r"rag_[a-z_]+", rule["expr"]))
+
+    unknown = {name for name in referenced if name not in exported}
+    assert not unknown, f"alerts reference metrics the app never exports: {unknown}"

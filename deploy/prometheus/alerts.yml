@@ -1,0 +1,115 @@
+# Alerting rules for the adaptive-rag stack.
+#
+# These are intentionally conservative: every rule has a `for` clause, because
+# an alert that fires on a single 15s scrape trains people to ignore the
+# channel, and a channel people ignore is worse than no alerting at all.
+#
+# Rules evaluate on the same cadence Prometheus scrapes, so `for: 5m` means
+# roughly five consecutive bad scrapes before anyone is paged.
+groups:
+  - name: adaptive-rag-availability
+    interval: 30s
+    rules:
+      # The API being unreachable is the alert that matters most, so it gets
+      # the shortest delay of the lot.
+      - alert: AdaptiveRagApiDown
+        expr: up{job="adaptive-rag-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The adaptive-rag API is not responding to scrapes"
+          description: >-
+            Prometheus has been unable to scrape the API for 2 minutes. Every
+            query, upload and login is failing for users.
+
+      # Quiet is not healthy. A stack with no traffic looks identical to a
+      # healthy one on an availability graph, so absence is its own signal.
+      - alert: AdaptiveRagNoTraffic
+        expr: sum(rate(rag_model_calls_total[30m])) == 0
+        for: 60m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No model calls for an hour"
+          description: >-
+            The API is up but nothing has used it for an hour. Check the UI and
+            the upstream provider credentials before assuming it is healthy.
+
+  - name: adaptive-rag-errors
+    interval: 30s
+    rules:
+      # A sustained error rate, not a single failed request. 5% is chosen so a
+      # burst of user error (a bad upload, a bad password) does not page
+      # anyone, but a broken provider key does.
+      - alert: AdaptiveRagHighErrorRate
+        expr: >-
+          sum(rate(rag_requests_total{status=~"5.."}[10m]))
+          / sum(rate(rag_requests_total[10m])) > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Over 5% of requests are failing"
+          description: >-
+            More than 5% of requests have returned 5xx for 10 minutes. Most
+            likely an expired provider key or an unreachable data store.
+
+      # Uploads are the feature, and they fail in ways queries do not: a
+      # rejected PDF or an unreachable Qdrant both look the same to a user.
+      - alert: AdaptiveRagUploadsFailing
+        expr: sum(rate(rag_uploads_total{status="error"}[15m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Document uploads are failing"
+          description: >-
+            Uploads have been erroring for 10 minutes. Users cannot index
+            documents, which defeats the purpose of the service.
+
+      - alert: AdaptiveRagHighLatency
+        expr: >-
+          histogram_quantile(
+            0.95,
+            sum(rate(rag_request_duration_seconds_bucket[10m])) by (le)
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 request latency is above 5s"
+          description: >-
+            The 95th percentile query latency has exceeded 5 seconds for 10
+            minutes. Users perceive anything past that as broken.
+
+  - name: adaptive-rag-saturation
+    interval: 30s
+    rules:
+      # Host-level pressure. Node-exporter supplies these; the thresholds are
+      # deliberately high because this stack is sized for a single VM and the
+      # alternative is paging at every burst.
+      - alert: AdaptiveRagHostMemoryPressure
+        expr: >-
+          (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.9
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host memory is above 90% used"
+          description: >-
+            Less than 10% of host memory remains available. MongoDB and Qdrant
+            will start failing requests before the OOM killer intervenes.
+
+      - alert: AdaptiveRagHostDiskFillingUp
+        expr: >-
+          (1 - node_filesystem_avail_bytes{mountpoint="/"}
+          / node_filesystem_size_bytes{mountpoint="/"}) > 0.85
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Host disk is above 85% full"
+          description: >-
+            MongoDB, the Qdrant snapshot and the backup archives all share this
+            filesystem. Filling it takes down writes and eventually backups.

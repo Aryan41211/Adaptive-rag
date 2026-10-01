@@ -2,6 +2,12 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+rule_files:
+  # Alert rules live in a separate file so they can be reviewed as rules rather
+  # than as scrape configuration, and so adding a rule does not risk changing
+  # how metrics are collected.
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   - job_name: "adaptive-rag-api"
     metrics_path: /metrics/prometheus

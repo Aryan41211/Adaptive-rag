@@ -155,6 +155,12 @@ services:
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12,127.0.0.1/8}
       # Empty in the default profile, where /metrics is loopback-reachable only.
       METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # Only needed if you raise --workers above 1 in the Dockerfile: with more
+      # than one worker each process keeps its own counters, so the default
+      # registry reports only whichever worker answered the scrape. Empty here
+      # is correct for the single-worker image, and the Dockerfile clears this
+      # directory on start so counters never accumulate across restarts.
+      PROMETHEUS_MULTIPROC_DIR: ${PROMETHEUS_MULTIPROC_DIR:-}
     depends_on:
       qdrant:
         condition: service_healthy
@@ -269,6 +275,10 @@ services:
       - "127.0.0.1:9090:9090"
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Paired with rule_files in prometheus.yml. Without this the rules load
+      # from a path that does not exist inside the container, Prometheus logs a
+      # file-not-found, and nothing is ever evaluated - a silent failure.
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus_data:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
