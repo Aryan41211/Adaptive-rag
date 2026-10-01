@@ -445,3 +445,76 @@ def test_compose_forwards_the_settings_the_application_actually_reads(variable):
     assert (
         variable in environment
     ), f"{variable} is documented but never passed to the api container"
+
+
+def test_compose_mounts_the_secrets_directory_the_application_reads():
+    """
+    src.core.config points pydantic-settings at /run/secrets, and the README
+    and .env.production.example both tell operators to put credentials in
+    Docker secrets. Nothing ever mounted that directory, so a file placed
+    there was invisible and the stack silently fell back to .env values -
+    worse than not offering file-based secrets at all, because the operator
+    believes the rotation took effect.
+    """
+    volumes = compose()["services"]["api"].get("volumes", [])
+    mounts = [volume for volume in volumes if "/run/secrets" in str(volume)]
+    assert mounts, "/run/secrets is read by src.core.config but never mounted"
+    for mount in mounts:
+        # Read-only: the container has no business rewriting a credential.
+        assert str(mount).rstrip().endswith(":ro"), f"{mount} is writable"
+
+
+def test_the_secrets_mount_is_optional_rather_than_required():
+    """
+    Long syntax with `required: true` would fail startup when the directory is
+    absent, breaking the documented out-of-the-box first run. The short
+    bind-mount form creates an empty root-owned directory instead, which is
+    the correct "no secrets configured" default.
+    """
+    volumes = compose()["services"]["api"].get("volumes", [])
+    secret_mounts = [volume for volume in volumes if "/run/secrets" in str(volume)]
+    assert secret_mounts
+    for mount in secret_mounts:
+        assert not isinstance(
+            mount, dict
+        ), f"{mount} uses long syntax, which would make the directory required"
+
+
+def test_credentials_written_to_the_secrets_directory_cannot_be_committed():
+    """
+    The README tells operators to write real credentials into
+    deploy/secrets/. If that directory is not ignored, following the
+    documentation is enough to put a live API key into git history, where
+    removing it later does not remove it.
+
+    Asserted through `git check-ignore` rather than by reading .gitignore,
+    because what matters is the effective result after all the rules are
+    applied in order - not what any single line appears to say.
+    """
+    if shutil.which("git") is None:
+        pytest.skip("git is not available")
+
+    probe = "deploy/secrets/probe_credential_check_only"
+    completed = subprocess.run(
+        ["git", "check-ignore", "-q", probe],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, (
+        f"{probe} is not gitignored; following the documented Secrets section "
+        "would put a live credential into the index"
+    )
+
+
+def test_the_secrets_directory_survives_a_fresh_clone():
+    """
+    The compose bind mount targets ./deploy/secrets. If the directory is
+    ignored wholesale - rather than ignored except for a placeholder - a fresh
+    clone has no such directory, and Compose creates it root-owned, which then
+    cannot be written to by the operator who needs to add a credential.
+    """
+    assert (DEPLOY / "secrets" / ".gitkeep").is_file(), (
+        "deploy/secrets/.gitkeep must be tracked so the directory exists in a "
+        "fresh clone and the bind mount resolves to a writable path"
+    )

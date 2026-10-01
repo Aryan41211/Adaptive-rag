@@ -111,6 +111,14 @@ services:
     # Public traffic goes through the tls profile's Caddy edge instead.
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      # src.core.config points pydantic-settings at this directory, so a file
+      # named after a setting wins over .env and keeps the value out of the
+      # process environment, where `docker inspect` and crash dumps can read
+      # it back. Short syntax on purpose: long syntax with required:true would
+      # fail startup when the directory is absent, breaking a first run.
+      # Create ./deploy/secrets/ and drop files in it (see the README).
+      - ./deploy/secrets:/run/secrets:ro
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       # Free local mode: set LLM_PROVIDER and EMBEDDING_PROVIDER to "ollama"
