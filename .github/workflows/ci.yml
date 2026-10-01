@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # The live probes exist to catch provider-side breakage an offline suite
+  # structurally cannot see: a retired model, a changed response shape, a
+  # revoked key. Weekly is often enough for that and keeps free-tier quota
+  # use negligible. 04:23 UTC, off the hour so this does not join every other
+  # scheduled workflow at :00.
+  schedule:
+    - cron: "23 4 * * 1"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -112,6 +119,41 @@ jobs:
           done
           curl -sf http://127.0.0.1:8501/_stcore/health
           docker logs ui
+
+  live-tests:
+    name: Live provider probes
+    runs-on: ubuntu-latest
+    # Deliberately not on pull_request. Forks cannot read repository secrets,
+    # so every probe would skip and report a green run that proved nothing -
+    # and a workflow that runs on pull_request_target can be used to exfiltrate
+    # a secret. Scheduled plus manual so the probes still catch provider
+    # breakage that an offline suite structurally cannot.
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    env:
+      # Satisfies the same startup validation as the offline jobs. The probes
+      # use GEMINI_API_KEY from repository secrets instead.
+      OPENAI_API_KEY: sk-ci-not-a-real-key
+      JWT_SECRET_KEY: ci-secret-key-long-enough-for-validation-0123456789
+      MONGODB_URL: ""
+      QDRANT_URL: ""
+      LOG_LEVEL: WARNING
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      # With no GEMINI_API_KEY secret configured these skip rather than fail,
+      # which is why the job stays green for anyone who forks the repository.
+      # A run that reports only skips is visible in the log, so silence is not
+      # mistaken for a passing provider check.
+      - name: Run the live Gemini probes
+        run: pytest tests_live -v -rs
 
   publish:
     name: Publish image

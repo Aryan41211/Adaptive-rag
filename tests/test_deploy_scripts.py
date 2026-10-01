@@ -693,3 +693,96 @@ def test_every_rag_metric_an_alert_reads_is_actually_exported():
 
     unknown = {name for name in referenced if name not in exported}
     assert not unknown, f"alerts reference metrics the app never exports: {unknown}"
+
+
+# --- live provider probes in CI --------------------------------------------
+def ci_workflow() -> dict:
+    path = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def ci_triggers() -> dict:
+    """
+    The workflow's `on:` block.
+
+    YAML 1.1 reads a bare `on` as the boolean true, so PyYAML hands it back
+    under the key True. GitHub Actions parses it correctly; this is purely an
+    artefact of reading the file locally.
+    """
+    workflow = ci_workflow()
+    return workflow.get("on", workflow.get(True, {}))
+
+
+def test_the_live_probe_suite_runs_somewhere_in_ci():
+    """
+    tests_live talks to a real provider, so pytest.ini excludes it from the
+    default run. Without a job that names it explicitly, those probes are
+    dead code that only ever passes on one developer's machine - the exact
+    drift this repository's other CI guards exist to prevent.
+    """
+    live = ci_workflow()["jobs"].get("live-tests")
+    assert live, "no CI job runs tests_live"
+
+    steps = yaml.safe_dump(live)
+    assert "tests_live" in steps, "the live-tests job never invokes tests_live"
+
+
+def test_live_probes_never_run_on_untrusted_pull_requests():
+    """
+    Pull requests from forks cannot read repository secrets, so the probes
+    would skip themselves and report a green run that proved nothing. Worse, a
+    workflow triggered on pull_request_target can be made to exfiltrate a
+    secret by a contributor. The job is restricted to pushes on main, a
+    schedule, and manual dispatch.
+    """
+    triggers = ci_triggers()
+    assert (
+        "pull_request_target" not in triggers
+    ), "pull_request_target would expose repository secrets to fork authors"
+
+    live = ci_workflow()["jobs"]["live-tests"]
+    guard = live.get("if", "")
+    assert (
+        "pull_request" not in guard
+    ), "the live-tests job has no guard keeping it off pull requests"
+    # Every event the workflow itself listens for must be accounted for by the
+    # job guard, otherwise a newly added trigger silently starts running
+    # secret-dependent probes.
+    assert "github.event_name" in guard, (
+        "guard the live-tests job by event name so a new trigger cannot "
+        "silently start running secret-dependent probes"
+    )
+
+
+def test_every_event_the_live_job_guards_on_is_a_real_workflow_trigger():
+    """
+    A job guard naming an event the workflow never listens for is dead code
+    that reads like coverage. The guard exists to allow push, schedule and
+    manual dispatch; if the schedule trigger is dropped, the job quietly stops
+    running weekly and nothing reports the loss.
+    """
+    triggers = set(ci_triggers())
+    guard = ci_workflow()["jobs"]["live-tests"].get("if", "")
+    named = {
+        event
+        for event in ("push", "pull_request", "schedule", "workflow_dispatch")
+        if f"github.event_name == '{event}'" in guard
+    }
+    assert named <= triggers, f"guard names events with no trigger: {named - triggers}"
+    assert "schedule" in triggers, (
+        "the live probes only run weekly via schedule; without it they see "
+        "provider breakage only when someone happens to push"
+    )
+
+
+def test_the_publish_job_does_not_wait_on_the_free_tier_live_probes():
+    """
+    The live probes hit a free tier that intermittently answers 429 and then
+    skips. Gating the image publish on them would mean a quota pause silently
+    blocks releases, which is the wrong trade: the offline suite and the image
+    smoke test already cover correctness.
+    """
+    publish = ci_workflow()["jobs"]["publish"]["needs"]
+    assert (
+        "live-tests" not in publish
+    ), "a free-tier quota skip must not be able to block an image publish"
