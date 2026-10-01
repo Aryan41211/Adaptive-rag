@@ -3,8 +3,17 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.ruff_cache/
 .coverage
+coverage.xml
 htmlcov/
+# Packaging output. `python -m build` writes a copy of the source tree here,
+# so without this the linter and formatter also process build artifacts and
+# a second, stale copy of the source ends up committed.
+build/
+dist/
+/artifacts/
+.deepeval/
 
 # Virtual environments
 venv/
