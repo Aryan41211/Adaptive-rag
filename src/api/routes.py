@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage
 
 from src.api.deps import CurrentUser, get_current_user
+from src.api.metrics import DOCUMENTS_TOTAL, UPLOAD_COUNT
 from src.api.ratelimit import query_rate_limit, upload_rate_limit
 from src.core.config import settings
 from src.core.logger import get_logger
@@ -186,13 +187,19 @@ async def upload_file(
         )
 
     # Parsing and embedding are blocking; run them off the event loop.
-    result = await run_in_threadpool(
-        process_upload,
-        user_id=user.user_id,
-        description=description,
-        filename=file.filename,
-        stream=file.file,
-    )
+    try:
+        result = await run_in_threadpool(
+            process_upload,
+            user_id=user.user_id,
+            description=description,
+            filename=file.filename,
+            stream=file.file,
+        )
+    except Exception:
+        UPLOAD_COUNT.labels(status="error").inc()
+        raise
+
+    UPLOAD_COUNT.labels(status="success").inc()
     return UploadResponse(**result)
 
 
@@ -210,6 +217,8 @@ async def list_documents(
         One entry per source document, with its chunk count.
     """
     documents = await run_in_threadpool(vector_store.list_documents, user.user_id)
+    # Refreshed on read, so the gauge cannot drift from what the API reports.
+    DOCUMENTS_TOTAL.labels(user_id=user.user_id).set(len(documents))
     return DocumentListResponse(
         documents=[DocumentSummary(**document) for document in documents],
         total_chunks=sum(document["chunks"] for document in documents),

@@ -28,15 +28,50 @@ def test_script_exists(script):
     assert script.is_file()
 
 
+def _working_bash():
+    """
+    A bash that actually runs, or None.
+
+    On Windows `shutil.which("bash")` finds System32\bash.EXE, which is the
+    WSL launcher rather than a shell. It exists, so an `is None` check passes,
+    and then every invocation fails with "execvpe(/bin/bash) failed" - a
+    red test that says nothing about the scripts under test.
+    """
+    bash = shutil.which("bash")
+    if bash is None:
+        return None
+    probe = subprocess.run(
+        [bash, "-c", "exit 0"], capture_output=True, text=True, timeout=30
+    )
+    return bash if probe.returncode == 0 else None
+
+
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
 def test_script_is_syntactically_valid(script):
     """A syntax error here surfaces during a recovery, at the worst moment."""
-    bash = shutil.which("bash")
+    bash = _working_bash()
     if bash is None:
-        pytest.skip("bash is not available")
+        pytest.skip("no working bash on this host")
 
     result = subprocess.run([bash, "-n", str(script)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+def test_bash_detection_reports_the_windows_wsl_shim_as_unusable(monkeypatch):
+    """
+    Guards the skip above. Without this, the suite cannot tell a real syntax
+    error from a host with no shell.
+    """
+    shim = Path(r"C:\Windows\System32\bash.EXE")
+
+    def _fake_which(_name):
+        return str(shim) if shim.exists() else None
+
+    monkeypatch.setattr(shutil, "which", _fake_which)
+
+    if not shim.exists():
+        pytest.skip("not on Windows")
+    assert _working_bash() is None, "the WSL launcher was treated as a shell"
 
 
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
@@ -360,11 +395,53 @@ def test_service_is_published_on_loopback_only(service):
 
 def test_api_is_not_published_on_all_interfaces():
     """
-    The API carries the unauthenticated /metrics/prometheus endpoint, the
-    OpenAPI schema (ENABLE_API_DOCS defaults to true), and a uvicorn running
-    with --forwarded-allow-ips, which trusts a spoofed X-Forwarded-For and
-    defeats the rate limiter. Published on 0.0.0.0 it must therefore be fixed
-    to the loopback interface.
+    The API carries the unauthenticated /metrics/prometheus endpoint and the
+    OpenAPI schema (ENABLE_API_DOCS defaults to true). Published on 0.0.0.0 it
+    would be reachable directly, bypassing Caddy entirely.
     """
     ports = compose()["services"]["api"]["ports"]
     assert "127.0.0.1:8000:8000" in ports
+
+
+def test_uvicorn_is_not_started_with_a_wildcard_forwarded_allow_list():
+    """
+    The single most important line in the image.
+
+    --forwarded-allow-ips governs request.client.host. With "*", uvicorn's
+    ProxyHeadersMiddleware rewrites that field from the client-supplied
+    X-Forwarded-For *before* the application sees the request, so src.api.
+    ratelimit._client_ip() ends up validating the attacker's own value against
+    TRUSTED_PROXIES and then returning it. Every caller could pick a fresh key
+    per request and never be rate limited, which is the only thing standing
+    between /auth/login and credential guessing.
+
+    The trust decision must be made by the application from the raw socket
+    peer, so uvicorn must not touch the forwarded headers at all.
+    """
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    assert "--forwarded-allow-ips" not in dockerfile, (
+        "uvicorn is trusting client-supplied forwarded headers; the rate limiter "
+        "reads request.client.host, which uvicorn has already overwritten"
+    )
+    assert '--forwarded-allow-ips "*"' not in dockerfile
+
+
+@pytest.mark.parametrize(
+    "variable",
+    ["TRUSTED_PROXIES", "METRICS_TOKEN"],
+    ids=["rate-limit proxy trust", "metrics token"],
+)
+def test_compose_forwards_the_settings_the_application_actually_reads(variable):
+    """
+    A variable documented in .env.example but absent from the api service's
+    environment is silently ignored: Compose only passes what it lists, so the
+    documented value never reaches the container and the setting keeps its
+    default. TRUSTED_PROXIES defaulting to empty means every request looks
+    like it came from one caller and shares a single rate-limit bucket.
+    """
+    environment = compose()["services"]["api"].get("environment", {})
+    assert (
+        variable in environment
+    ), f"{variable} is documented but never passed to the api container"

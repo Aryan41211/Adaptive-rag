@@ -107,10 +107,8 @@ services:
     # Loopback only, like the data stores: the UI and Prometheus reach the API
     # over the compose network, so the host mapping exists purely for local
     # tooling. Published on 0.0.0.0, /docs, /redoc, /openapi.json and the
-    # unauthenticated /metrics/prometheus would all be reachable externally,
-    # and uvicorn's --forwarded-allow-ips would trust a spoofed
-    # X-Forwarded-For, defeating the rate limiter. Public traffic goes through
-    # the tls profile's Caddy edge instead.
+    # unauthenticated /metrics/prometheus would all be reachable externally.
+    # Public traffic goes through the tls profile's Caddy edge instead.
     ports:
       - "127.0.0.1:8000:8000"
     environment:
@@ -141,6 +139,14 @@ services:
       # at the Caddy edge regardless, and .env.production.example turns it off.
       ENABLE_API_DOCS: ${ENABLE_API_DOCS:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Which peers may set X-Forwarded-For. Read by src.api.ratelimit from the
+      # raw socket peer, which uvicorn leaves untouched (--no-proxy-headers),
+      # so only the Caddy container in the tls profile can speak for a caller.
+      # Docker's default networks are 172.16/12; on a custom network this must
+      # be narrowed, or every caller shares one rate-limit bucket.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12,127.0.0.1/8}
+      # Empty in the default profile, where /metrics is loopback-reachable only.
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
     depends_on:
       qdrant:
         condition: service_healthy

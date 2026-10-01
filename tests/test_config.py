@@ -49,7 +49,14 @@ def test_placeholder_openai_key_is_rejected():
 
 
 # --- Gemini provider ---------------------------------------------------------
-def test_gemini_provider_without_a_key_is_rejected():
+def test_gemini_provider_without_a_key_is_rejected(monkeypatch):
+    """
+    The ambient environment must be cleared, not merely absent: a developer's
+    own .env supplies GEMINI_API_KEY, and the deepeval pytest plugin autoloads
+    that file into os.environ, so an unpatched test passes in CI and fails on
+    a configured laptop.
+    """
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     with pytest.raises(ValidationError):
         _settings(LLM_PROVIDER="gemini")
     with pytest.raises(ValidationError):

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from langchain_core.callbacks import BaseCallbackHandler
 
+from src.api.metrics import record_turn_usage
 from src.core.logger import get_logger, request_id_var
 
 logger = get_logger(__name__)
@@ -65,6 +66,9 @@ class Usage:
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0
+    # The model behind the most recent call. Recorded so the metrics can label
+    # a turn by provider without every caller having to pass it separately.
+    model: str = ""
 
     @property
     def total_tokens(self) -> int:
@@ -77,6 +81,7 @@ class Usage:
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens
         self.cost_usd += estimate_cost(model, input_tokens, output_tokens)
+        self.model = model
 
     def merge(self, other: "Usage") -> None:
         """Fold another tally into this one."""
@@ -160,11 +165,17 @@ class UsageTracker(BaseCallbackHandler):
         """
         Fold this request's usage into the process totals and log it.
 
+        This is the single point every path passes through - the non-streaming
+        query, the streaming query, and anything added later - so the metrics
+        are published here rather than at each call site. Publishing per
+        caller would mean a new path silently reports no spend.
+
         Returns:
             The usage for this request.
         """
         TOTALS.record(self.usage)
         if self.usage.calls:
+            record_turn_usage(self.usage, self.usage.model or "unknown")
             logger.info(
                 "Request usage: %d model calls, %d tokens, ~$%.5f (req=%s)",
                 self.usage.calls,
