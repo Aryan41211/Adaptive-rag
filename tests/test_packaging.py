@@ -12,6 +12,7 @@ These are static checks for speed; `tests/test_packaging.py::test_the_wheel
 _actually_contains_the_application` builds a real wheel and is the backstop.
 """
 
+import re
 import subprocess
 import sys
 import zipfile
@@ -143,6 +144,43 @@ def test_the_wheel_actually_contains_the_application(tmp_path):
     # Metadata must match the pinned requirements, not a stale copy.
     assert "Requires-Dist: langchain==0.3.27" in metadata, (
         "the wheel no longer carries the pinned LangChain version"
+    )
+
+
+# Distributions that exist only on Windows. They reach a lock file as transitive
+# dependencies of perfectly portable packages - pywin32 arrives via
+# portalocker <- streamlit - so nothing about requirements.txt looks wrong. An
+# unqualified pin then breaks `docker build`, because the Linux image tries to
+# install a distribution that was never published for it.
+WINDOWS_ONLY_DISTRIBUTIONS = {
+    "pywin32",
+    "pywin32-ctypes",
+    "pywinpty",
+    "nt-time",
+    "pywin32-com",
+}
+
+
+def test_no_windows_only_pin_is_unqualified_in_the_lock():
+    """
+    `pip-compile` records whatever platform it ran on. Run on Windows it emits
+    pywin32 with no marker, and the image build fails at the pip step with
+    "Could not find a version that satisfies the requirement pywin32" - which
+    reads like a network or index problem, not a platform problem, and costs a
+    lot of time to diagnose from the error alone.
+    """
+    offenders = []
+    lock = (ROOT / "requirements.lock.txt").read_text(encoding="utf-8")
+    for raw in lock.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or ";" in line:
+            continue
+        package = re.split(r"[=<>!\[]", line)[0].strip().lower()
+        if package in WINDOWS_ONLY_DISTRIBUTIONS:
+            offenders.append(line)
+    assert not offenders, (
+        "Windows-only distributions pinned without a sys_platform marker; the "
+        f"Linux image cannot install these: {offenders}"
     )
 
 
