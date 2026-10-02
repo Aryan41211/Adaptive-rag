@@ -11,8 +11,26 @@ without it.
 """
 
 import hmac
+import os
 import threading
 import time
+
+# prometheus_client chooses its value class by testing whether
+# PROMETHEUS_MULTIPROC_DIR is *present* in the environment, not whether it is
+# non-empty, and that decision is made the first time prometheus_client.values
+# is imported. docker-compose.yml forwards the variable as
+# ${PROMETHEUS_MULTIPROC_DIR:-}, so an unconfigured deployment has it present
+# and empty - which still enables multiprocess mode, with mmap paths built by
+# os.path.join("", "gauge_all_1.db") and therefore relative to the working
+# directory. The image runs unprivileged in a root-owned /app, so the first
+# Gauge raised PermissionError and the API never started.
+#
+# This has to happen before the import below, which is also why it is not a
+# line in the settings model: by the time src.core.config is read, the value
+# class is already fixed. An unset variable is the correct way to say "off".
+if not os.environ.get("PROMETHEUS_MULTIPROC_DIR", "").strip():
+    os.environ.pop("PROMETHEUS_MULTIPROC_DIR", None)
+    os.environ.pop("prometheus_multiproc_dir", None)
 
 from prometheus_client import (
     CONTENT_TYPE_LATEST,

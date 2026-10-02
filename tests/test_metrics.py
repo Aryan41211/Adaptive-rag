@@ -1,6 +1,9 @@
 """Tests for the Prometheus metrics endpoint."""
 
 import os
+import subprocess
+import sys
+from pathlib import Path
 
 os.environ["OPENAI_API_KEY"] = "sk-test-key-not-real"
 os.environ["JWT_SECRET_KEY"] = "test-secret-key-long-enough-for-validation-0123456789"
@@ -284,3 +287,56 @@ def test_metrics_stay_open_when_no_token_is_configured(monkeypatch):
     monkeypatch.setattr(metrics_settings, "METRICS_TOKEN", "")
     with TestClient(app) as open_endpoint:
         assert open_endpoint.get("/metrics/prometheus").status_code == 200
+
+
+def test_an_empty_multiproc_dir_keeps_multiprocess_mode_off(tmp_path):
+    """
+    `PROMETHEUS_MULTIPROC_DIR` is forwarded into the API container as
+    `${PROMETHEUS_MULTIPROC_DIR:-}`, so unconfigured it is *present and empty*.
+    prometheus_client picks its value class by testing for the mere presence of
+    that name in the environment rather than for a non-empty value, so the empty
+    string still switches multiprocess mode on - and then builds its mmap path
+    with os.path.join("", "gauge_all_1.db"), which is relative to the working
+    directory. In the image the process runs unprivileged in a root-owned /app,
+    so the first Gauge raised
+
+        PermissionError: [Errno 13] Permission denied: 'gauge_all_1.db'
+
+    and the API never started at all. The documented instruction is "leave it
+    empty", so this was the default path for every single-worker deployment, and
+    nothing caught it because the single-worker test suite never sets the
+    variable - only compose does, and only at runtime.
+
+    The assertion is that no mmap files appear, rather than that an import
+    succeeds: on a writable working directory the unfixed code limps along and
+    litters the repository, and only the unprivileged container actually raises.
+    Checking for the files catches the bug on any platform.
+
+    Subprocess because the value class is bound when prometheus_client.values is
+    first imported, which has already happened in this test session.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    env = {
+        **os.environ,
+        "PROMETHEUS_MULTIPROC_DIR": "",
+        # cwd is the temporary directory so any mmap file lands there, which
+        # means the repository root has to come in via PYTHONPATH.
+        "PYTHONPATH": str(repo_root),
+    }
+    completed = subprocess.run(
+        [sys.executable, "-c", "import src.api.metrics"],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert completed.returncode == 0, completed.stderr[-2000:]
+
+    mmap_files = sorted(p.name for p in tmp_path.glob("*.db"))
+    assert not mmap_files, (
+        "an empty PROMETHEUS_MULTIPROC_DIR must mean multiprocess mode is off, "
+        "but importing the metrics module created mmap files "
+        f"{mmap_files}. In the container this same condition raises "
+        "PermissionError and the API does not start."
+    )

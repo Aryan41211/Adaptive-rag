@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+# prometheus_client multiprocess mmap files, written into the working directory
+# when PROMETHEUS_MULTIPROC_DIR is configured. Build artefacts, never source.
+*_*.db
 .pytest_cache/
 .ruff_cache/
 .coverage
