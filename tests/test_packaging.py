@@ -40,17 +40,36 @@ def test_the_build_backend_is_declared():
     assert build_system.get("build-backend")
 
 
+def _discovery():
+    """
+    Normalise the two ways to be explicit about package layout. A literal
+    `packages = [...]` list and a `[tool.setuptools.packages.find]` table both
+    state the intent; what must never happen is stating nothing and letting
+    setuptools guess.
+    """
+    tool = pyproject().get("tool", {}).get("setuptools", {})
+    packages = tool.get("packages")
+    if isinstance(packages, list):
+        return "list", packages
+    if isinstance(packages, dict) and isinstance(packages.get("find"), dict):
+        # [tool.setuptools.packages.find] nests the table under "find".
+        return "find", packages["find"]
+    return "find", None
+
+
 def test_package_discovery_is_explicit_rather_than_autodetected():
     """
     Autodetection is the actual bug: with src/__init__.py present, setuptools
     resolves `src` as the package root and ships its children at the top level.
     """
-    tool = pyproject().get("tool", {}).get("setuptools", {})
-    discovery = tool.get("packages")
-    assert isinstance(discovery, list) and discovery, (
+    kind, value = _discovery()
+    assert value, (
         "packages are autodetected; setuptools will treat src/ as the package "
         "root and ship api/, core/, tools/ as top-level names"
     )
+    if kind == "find":
+        assert value.get("include"), "packages.find has no include pattern"
+        assert value.get("where") is not None, "packages.find has no where root"
 
 
 def test_the_wheel_ships_the_application_under_its_real_package_path():
@@ -59,11 +78,24 @@ def test_the_wheel_ships_the_application_under_its_real_package_path():
     layout has to keep the `src` prefix. Flattening it produces a wheel that
     installs cleanly and then fails on first import.
     """
-    packages = pyproject()["tool"]["setuptools"]["packages"]
-    assert any(package.startswith("src") for package in packages), (
-        f"no package starts with 'src'; imports would break after install: {packages}"
+    kind, value = _discovery()
+    if kind == "find":
+        include = value.get("include") or []
+        assert any(pattern.startswith("src") for pattern in include), (
+            f"packages.find includes {include}, so no package keeps the 'src' "
+            "prefix; imports would break after install"
+        )
+        # Discovery is only safe if it cannot sweep up non-library directories.
+        assert not any(pattern in ("*", "src.*") for pattern in include), (
+            f"packages.find includes {include}, which would ship streamlit_app "
+            "and tests into the wheel"
+        )
+        return
+
+    assert any(package.startswith("src") for package in value), (
+        f"no package starts with 'src'; imports would break after install: {value}"
     )
-    for package in packages:
+    for package in value:
         assert package == "src" or package.startswith("src."), (
             f"{package} would be installed as a top-level name"
         )
@@ -140,6 +172,21 @@ def test_the_wheel_actually_contains_the_application(tmp_path):
     assert "src/main.py" in names, "the application entrypoint is missing"
     assert not any(n.startswith("streamlit_app") for n in names)
     assert not any(n.startswith("tests") for n in names)
+
+    # The entrypoint existing is not enough: an explicit `packages = [...]` list
+    # once omitted `src.rag.backends`, the wheel still contained src/main.py,
+    # and every other assertion above still passed. Compare the full module set
+    # against the source tree so a missing subpackage cannot hide again.
+    on_disk = {
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "src").rglob("*.py")
+        if "__pycache__" not in path.parts
+    }
+    missing = sorted(on_disk - set(names))
+    assert not missing, (
+        "modules present in src/ but absent from the wheel; an installed "
+        f"distribution would fail to import them: {missing}"
+    )
 
     # Metadata must match the pinned requirements, not a stale copy.
     assert "Requires-Dist: langchain==0.3.27" in metadata, (

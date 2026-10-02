@@ -25,20 +25,18 @@ Documentation = "https://github.com/Aryan41211/Adaptive-rag/blob/main/README.md"
 # models/, rag/, tools/ and config/ as top-level names - which shadow
 # unrelated packages and make `import src.main` fail after installing.
 #
-# streamlit_app is deliberately absent: it is an entrypoint, not a library,
-# and shipping it would pull Streamlit into every install of this package.
-packages = [
-    "src",
-    "src.api",
-    "src.config",
-    "src.core",
-    "src.db",
-    "src.llms",
-    "src.memory",
-    "src.models",
-    "src.rag",
-    "src.tools",
-]
+# The subpackages are discovered, not listed. A hand-maintained list silently
+# omitted `src.rag.backends`, so an installed distribution raised
+# ModuleNotFoundError for a package that plainly exists in the repository, and
+# nothing in the test suite noticed because the tests import from the source
+# tree. Discovery means a new subpackage is packaged the day it is created.
+#
+# `include = ["src*"]` is what keeps streamlit_app and tests out: streamlit_app
+# is an entrypoint rather than a library, and shipping it would pull Streamlit
+# into every install of this package.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
