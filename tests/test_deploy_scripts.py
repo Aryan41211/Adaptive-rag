@@ -10,6 +10,7 @@ failure that would otherwise go unnoticed until a recovery.
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -38,14 +39,29 @@ def _working_bash():
     WSL launcher rather than a shell. It exists, so an `is None` check passes,
     and then every invocation fails with "execvpe(/bin/bash) failed" - a
     red test that says nothing about the scripts under test.
+
+    Git for Windows ships a real bash and is on the PATH of anyone who has git,
+    so the candidates are tried in turn and the probe picks the first that
+    answers rather than deciding from the name.
     """
-    bash = shutil.which("bash")
-    if bash is None:
-        return None
-    probe = subprocess.run(
-        [bash, "-c", "exit 0"], capture_output=True, text=True, timeout=30
-    )
-    return bash if probe.returncode == 0 else None
+    candidates = [shutil.which("bash")]
+    if sys.platform == "win32":
+        candidates += [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+        ]
+    for bash in candidates:
+        if bash is None or not Path(bash).is_file():
+            continue
+        try:
+            probe = subprocess.run(
+                [bash, "-c", "exit 0"], capture_output=True, text=True, timeout=30
+            )
+        except OSError:
+            continue
+        if probe.returncode == 0:
+            return bash
+    return None
 
 
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
@@ -63,6 +79,12 @@ def test_bash_detection_reports_the_windows_wsl_shim_as_unusable(monkeypatch):
     """
     Guards the skip above. Without this, the suite cannot tell a real syntax
     error from a host with no shell.
+
+    Asserted as "the shim is not what gets returned" rather than "nothing is
+    returned": a host can have both a WSL launcher and a real Git bash, and
+    turning the shim down should find the real shell rather than give up and
+    skip - which is what it used to do, leaving two scripts unvalidated on
+    every Windows machine that had git installed.
     """
     shim = Path(r"C:\Windows\System32\bash.EXE")
 
@@ -73,7 +95,11 @@ def test_bash_detection_reports_the_windows_wsl_shim_as_unusable(monkeypatch):
 
     if not shim.exists():
         pytest.skip("not on Windows")
-    assert _working_bash() is None, "the WSL launcher was treated as a shell"
+
+    found = _working_bash()
+    assert found is None or Path(found) != shim, (
+        "the WSL launcher was treated as a shell"
+    )
 
 
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
