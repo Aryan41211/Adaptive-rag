@@ -338,3 +338,29 @@ def test_a_missing_secrets_directory_is_not_an_error():
         JWT_SECRET_KEY=VALID_SECRET,
     )
     assert settings.OPENAI_API_KEY == "sk-real-looking-key"
+
+
+def test_an_empty_metrics_token_does_not_shadow_its_secret_file(tmp_path, monkeypatch):
+    """Compose sends METRICS_TOKEN="" when it is unset, and empty must mean unset.
+
+    Prometheus reads the same token from this file, so an empty variable that
+    won would leave the API securing metrics while Prometheus is refused with a
+    401 - the endpoint protected and the monitoring of it both broken, with
+    nothing in either log to say why.
+    """
+    monkeypatch.setenv("METRICS_TOKEN", "")
+    monkeypatch.setenv("SECRETS_DIR", str(tmp_path))
+    (tmp_path / "metrics_token").write_text("token-from-a-file", encoding="utf-8")
+
+    settings = Settings(_env_file=None, JWT_SECRET_KEY=VALID_SECRET)
+    assert settings.METRICS_TOKEN == "token-from-a-file"
+
+
+def test_a_real_metrics_token_in_the_environment_still_wins(tmp_path, monkeypatch):
+    """The fallback must not quietly hand the file precedence over an override."""
+    monkeypatch.setenv("METRICS_TOKEN", "token-from-the-environment")
+    monkeypatch.setenv("SECRETS_DIR", str(tmp_path))
+    (tmp_path / "metrics_token").write_text("token-from-a-file", encoding="utf-8")
+
+    settings = Settings(_env_file=None, JWT_SECRET_KEY=VALID_SECRET)
+    assert settings.METRICS_TOKEN == "token-from-the-environment"

@@ -190,6 +190,26 @@ class Settings(BaseSettings):
             raise ValueError("\n".join(missing))
         return self
 
+    @field_validator("METRICS_TOKEN")
+    @classmethod
+    def _read_metrics_token_from_a_file(cls, value: str) -> str:
+        # Prometheus scrapes /metrics/prometheus with this same token, read from
+        # a file, because Prometheus has no way to interpolate an environment
+        # variable into its config. Compose passes METRICS_TOKEN="" when the
+        # operator has not set it, and pydantic-settings treats that empty
+        # string as a real value that shadows the file - so the API would start
+        # serving with metrics open while Prometheus was refused with a 401, or
+        # the reverse, with neither log saying why. A blank token is the one
+        # value that cannot be meant literally, so treat it as "not set" and
+        # fall back to the file. A real token in the environment still wins.
+        if value.strip():
+            return value
+        path = Path(os.getenv("SECRETS_DIR", "/run/secrets")) / "metrics_token"
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return value
+
     @field_validator("JWT_SECRET_KEY")
     @classmethod
     def _require_strong_jwt_secret(cls, value: str) -> str:
