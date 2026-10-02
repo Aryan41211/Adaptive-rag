@@ -307,3 +307,45 @@ def test_the_readme_does_not_hardcode_a_test_count():
         "is added, and nothing fails when it is. Point at "
         "`pytest --collect-only -q` instead."
     )
+
+
+def test_the_readme_alert_table_matches_the_actual_rules():
+    """
+    The README tabulates every alerting rule with its severity and threshold.
+    Those numbers are transcribed by hand, so they drift the first time someone
+    tunes a rule and forgets the prose. An alert table that lies about when it
+    fires is worse than no table: it is what an on-call engineer trusts at 3am.
+
+    The table is matched leniently - names and severities exactly, thresholds
+    as loose digit sequences - because restating an expression in prose cannot
+    be exact, and a test strict enough to require it would just get deleted.
+    """
+    alerts = (ROOT / "deploy" / "prometheus" / "alerts.yml").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    rules = re.findall(
+        r"- alert: (\S+).*?for: (\S+).*?severity: (\S+)",
+        alerts,
+        re.DOTALL,
+    )
+    assert len(rules) == 7, f"expected 7 alert rules, parsed {len(rules)}"
+
+    table = readme[readme.index("### Alerting") : readme.index("### Metrics")]
+    for name, duration, severity in rules:
+        assert f"`{name}`" in table, f"{name} is not documented in the alert table"
+        assert re.search(rf"\|\s*`{re.escape(name)}`\s*\|\s*{severity}\s*\|", table), (
+            f"{name} is documented with the wrong severity (rules say {severity})"
+        )
+        # 2m / 10m / 60m etc, allowing "for 2m" or "for 2 minutes".
+        minutes = re.fullmatch(r"(\d+)([smh])", duration)
+        assert minutes, f"cannot interpret the for-clause {duration!r} of {name}"
+        value, unit = int(minutes.group(1)), minutes.group(2)
+        rendered = {value}
+        if unit == "m":
+            rendered.add(value * 60)
+        elif unit == "h":
+            rendered.add(value // 60)
+        assert any(f"{n}m" in table for n in rendered if n), (
+            f"{name} fires after {duration}, but no matching duration is in the "
+            "README table"
+        )

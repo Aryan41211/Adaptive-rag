@@ -853,6 +853,64 @@ user registered on one worker cannot log in on another.
 | Liveness | `GET /healthz` |
 | Readiness | `GET /readyz` |
 
+### Alerting
+
+Prometheus evaluates seven alerting rules from `deploy/prometheus/alerts.yml`,
+mounted read-only into the `prometheus` container. Scrape and rule evaluation
+both run every 15s, and the three rule groups re-evaluate every 30s. See what is
+currently firing at <http://localhost:9090/alerts>.
+
+| Alert | Severity | Fires when |
+|---|---|---|
+| `AdaptiveRagApiDown` | critical | the `adaptive-rag-api` job cannot be scraped for 2m |
+| `AdaptiveRagHighErrorRate` | critical | over 5% of requests returned 5xx across 10m, sustained 10m |
+| `AdaptiveRagNoTraffic` | warning | no model calls at all for 60m |
+| `AdaptiveRagUploadsFailing` | warning | any upload errored, sustained 10m |
+| `AdaptiveRagHighLatency` | warning | p95 request latency above 5s, sustained 10m |
+| `AdaptiveRagHostMemoryPressure` | warning | host memory above 90% used, sustained 10m |
+| `AdaptiveRagHostDiskFillingUp` | warning | root filesystem above 85% full, sustained 15m |
+
+Every rule has a `for` clause on purpose. An alert that fires on one scrape
+teaches people to ignore the channel, and an ignored channel is worse than no
+alerting. `AdaptiveRagNoTraffic` is the one that looks wrong until you need it:
+a stack with no traffic is indistinguishable from a healthy one on an
+availability graph, so silence is treated as its own signal.
+
+Validate the rules without starting the stack. Prometheus silently ignores a
+rule file it cannot parse, so a typo does not raise anything - the alert simply
+never exists:
+
+```bash
+docker run --rm -v "$PWD/deploy/prometheus:/etc/prometheus:ro" \
+  --entrypoint promtool prom/prometheus:v2.53.0 check rules /etc/prometheus/alerts.yml
+```
+
+**No notifications are sent yet.** There is no Alertmanager in the compose
+file, so these rules evaluate, appear in the Prometheus UI and the `/alerts`
+endpoint, and then stop there. Nothing emails, messages or pages anyone. Wiring
+that up means adding an `alertmanager` service, pointing
+`deploy/prometheus/prometheus.yml` at it, and choosing a receiver. Until then
+the alerting rules are a dashboard, not a phone.
+
+### Metrics
+
+Prometheus scrapes `GET /metrics/prometheus` on the API, in OpenMetrics text
+format. `GET /metrics` also exists for local debugging.
+
+When `METRICS_TOKEN` is set, `/metrics/prometheus` requires
+`Authorization: Bearer <token>`; Prometheus reads the same variable, so the two
+cannot drift apart. With no token the endpoint is open, which is only safe
+because the compose file publishes the API port on `127.0.0.1:8000` and the
+`tls` profile's Caddy answers 404 for that path rather than proxying it. A
+hosted deployment has no such edge, so it must set a token.
+
+**More than one worker requires `PROMETHEUS_MULTIPROC_DIR`.** With several
+uvicorn workers and that variable empty, each process keeps its own counters and
+a scrape returns whichever worker happened to answer it - so request totals,
+error rates and the latency histogram are all wrong, in a way that still looks
+plausible. Set it to a writable path to aggregate across workers; the image
+clears the directory on start so counters never accumulate across restarts.
+
 ### Containerisation
 
 ```bash
