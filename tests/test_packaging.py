@@ -59,13 +59,13 @@ def test_the_wheel_ships_the_application_under_its_real_package_path():
     installs cleanly and then fails on first import.
     """
     packages = pyproject()["tool"]["setuptools"]["packages"]
-    assert any(
-        package.startswith("src") for package in packages
-    ), f"no package starts with 'src'; imports would break after install: {packages}"
+    assert any(package.startswith("src") for package in packages), (
+        f"no package starts with 'src'; imports would break after install: {packages}"
+    )
     for package in packages:
-        assert package == "src" or package.startswith(
-            "src."
-        ), f"{package} would be installed as a top-level name"
+        assert package == "src" or package.startswith("src."), (
+            f"{package} would be installed as a top-level name"
+        )
 
 
 def test_runtime_dependencies_come_from_the_locked_requirements_file():
@@ -94,9 +94,9 @@ def test_the_streamlit_ui_is_not_installed_as_a_library():
     copy of the app on sys.path.
     """
     packages = pyproject()["tool"]["setuptools"]["packages"]
-    assert not any(
-        package.startswith("streamlit_app") for package in packages
-    ), "the Streamlit UI should not be packaged as a library"
+    assert not any(package.startswith("streamlit_app") for package in packages), (
+        "the Streamlit UI should not be packaged as a library"
+    )
 
 
 def test_the_wheel_actually_contains_the_application(tmp_path):
@@ -141,6 +141,6 @@ def test_the_wheel_actually_contains_the_application(tmp_path):
     assert not any(n.startswith("tests") for n in names)
 
     # Metadata must match the pinned requirements, not a stale copy.
-    assert (
-        "Requires-Dist: langchain==0.3.27" in metadata
-    ), "the wheel no longer carries the pinned LangChain version"
+    assert "Requires-Dist: langchain==0.3.27" in metadata, (
+        "the wheel no longer carries the pinned LangChain version"
+    )

@@ -359,9 +359,9 @@ def test_render_metrics_endpoint_is_not_publicly_readable():
     /metrics/prometheus does not exist on this path. Without a token the
     endpoint serves route and latency internals to anyone who finds the host.
     """
-    assert render_env("adaptive-rag-api").get(
-        "METRICS_TOKEN"
-    ), "METRICS_TOKEN is unset on the public API"
+    assert render_env("adaptive-rag-api").get("METRICS_TOKEN"), (
+        "METRICS_TOKEN is unset on the public API"
+    )
 
 
 def test_render_declares_the_web_search_key_the_graph_routes_to():
@@ -375,9 +375,9 @@ def test_render_declares_the_web_search_key_the_graph_routes_to():
     Declared with sync:false, so Render prompts for it at deploy time and the
     choice is visible. Left blank it degrades exactly as it does now.
     """
-    assert "TAVILY_API_KEY" in render_env(
-        "adaptive-rag-api"
-    ), "the web_search branch is unreachable on the Render blueprint"
+    assert "TAVILY_API_KEY" in render_env("adaptive-rag-api"), (
+        "the web_search branch is unreachable on the Render blueprint"
+    )
 
 
 # --- exposure boundary ------------------------------------------------------
@@ -459,9 +459,9 @@ def test_compose_forwards_the_settings_the_application_actually_reads(variable):
     like it came from one caller and shares a single rate-limit bucket.
     """
     environment = compose()["services"]["api"].get("environment", {})
-    assert (
-        variable in environment
-    ), f"{variable} is documented but never passed to the api container"
+    assert variable in environment, (
+        f"{variable} is documented but never passed to the api container"
+    )
 
 
 def test_compose_mounts_the_secrets_directory_the_application_reads():
@@ -492,9 +492,9 @@ def test_the_secrets_mount_is_optional_rather_than_required():
     secret_mounts = [volume for volume in volumes if "/run/secrets" in str(volume)]
     assert secret_mounts
     for mount in secret_mounts:
-        assert not isinstance(
-            mount, dict
-        ), f"{mount} uses long syntax, which would make the directory required"
+        assert not isinstance(mount, dict), (
+            f"{mount} uses long syntax, which would make the directory required"
+        )
 
 
 def test_credentials_written_to_the_secrets_directory_cannot_be_committed():
@@ -578,9 +578,9 @@ def test_stale_multiprocess_metric_files_are_cleared_on_start():
     dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(
         encoding="utf-8"
     )
-    assert (
-        "PROMETHEUS_MULTIPROC_DIR" in dockerfile
-    ), "the Dockerfile never references the multiprocess directory"
+    assert "PROMETHEUS_MULTIPROC_DIR" in dockerfile, (
+        "the Dockerfile never references the multiprocess directory"
+    )
     cmd = dockerfile.split("CMD [", 1)[1]
     assert "-delete" in cmd or "-exec rm" in cmd, (
         "the multiprocess directory is not cleared before uvicorn starts, so "
@@ -611,9 +611,9 @@ def test_alert_rules_are_loaded_and_cover_the_failing_signals():
     # file says nothing about whether the shipped rules are the ones loaded.
     rule_files = yaml.safe_load(prometheus).get("rule_files") or []
     assert rule_files, "prometheus.yml has no rule_files section"
-    assert any(
-        "alerts.yml" in str(path) for path in rule_files
-    ), f"rule_files {rule_files} never loads the shipped alerts.yml"
+    assert any("alerts.yml" in str(path) for path in rule_files), (
+        f"rule_files {rule_files} never loads the shipped alerts.yml"
+    )
 
     alerts = [rule for group in rules["groups"] for rule in group["rules"]]
     assert alerts, "no alert rules defined"
@@ -628,14 +628,14 @@ def test_alert_rules_are_loaded_and_cover_the_failing_signals():
     names = {rule["alert"] for rule in alerts}
     # The signals that matter here: the service is down, it is erroring, it is
     # slow, it is rejecting uploads, or nobody is using it.
-    assert any(
-        "upload" in name.lower() for name in names
-    ), "no alert covers document upload, the feature the service exists for"
+    assert any("upload" in name.lower() for name in names), (
+        "no alert covers document upload, the feature the service exists for"
+    )
     assert any("error" in name.lower() for name in names)
     assert any("down" in name.lower() for name in names)
-    assert any(
-        "memory" in name.lower() or "disk" in name.lower() for name in names
-    ), "no host saturation alert; MongoDB and Qdrant fail before the OOM killer"
+    assert any("memory" in name.lower() or "disk" in name.lower() for name in names), (
+        "no host saturation alert; MongoDB and Qdrant fail before the OOM killer"
+    )
 
 
 def test_rule_groups_only_use_keys_prometheus_accepts():
@@ -736,15 +736,15 @@ def test_live_probes_never_run_on_untrusted_pull_requests():
     schedule, and manual dispatch.
     """
     triggers = ci_triggers()
-    assert (
-        "pull_request_target" not in triggers
-    ), "pull_request_target would expose repository secrets to fork authors"
+    assert "pull_request_target" not in triggers, (
+        "pull_request_target would expose repository secrets to fork authors"
+    )
 
     live = ci_workflow()["jobs"]["live-tests"]
     guard = live.get("if", "")
-    assert (
-        "pull_request" not in guard
-    ), "the live-tests job has no guard keeping it off pull requests"
+    assert "pull_request" not in guard, (
+        "the live-tests job has no guard keeping it off pull requests"
+    )
     # Every event the workflow itself listens for must be accounted for by the
     # job guard, otherwise a newly added trigger silently starts running
     # secret-dependent probes.
@@ -783,6 +783,6 @@ def test_the_publish_job_does_not_wait_on_the_free_tier_live_probes():
     smoke test already cover correctness.
     """
     publish = ci_workflow()["jobs"]["publish"]["needs"]
-    assert (
-        "live-tests" not in publish
-    ), "a free-tier quota skip must not be able to block an image publish"
+    assert "live-tests" not in publish, (
+        "a free-tier quota skip must not be able to block an image publish"
+    )

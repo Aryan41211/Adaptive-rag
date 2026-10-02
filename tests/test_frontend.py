@@ -50,9 +50,9 @@ def test_set_page_config_is_the_first_streamlit_call(page):
     """Streamlit raises if any other st.* call precedes set_page_config."""
     calls = _streamlit_calls(_tree(page))
     assert calls, f"{page.name} makes no Streamlit calls"
-    assert (
-        calls[0] == "set_page_config"
-    ), f"{page.name} calls st.{calls[0]} before st.set_page_config"
+    assert calls[0] == "set_page_config", (
+        f"{page.name} calls st.{calls[0]} before st.set_page_config"
+    )
 
 
 @pytest.mark.parametrize("page", PAGES, ids=lambda p: p.name)
@@ -89,9 +89,9 @@ def test_switch_page_targets_exist(page):
     assert targets, f"{page.name} has no switch_page calls"
     for target in targets:
         resolved = APP_DIR / target
-        assert (
-            resolved.is_file()
-        ), f"{page.name}: switch_page('{target}') does not exist"
+        assert resolved.is_file(), (
+            f"{page.name}: switch_page('{target}') does not exist"
+        )
         # Filenames are case-sensitive on Linux containers.
         assert resolved.name in {p.name for p in resolved.parent.iterdir()}
 
