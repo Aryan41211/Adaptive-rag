@@ -885,12 +885,41 @@ docker run --rm -v "$PWD/deploy/prometheus:/etc/prometheus:ro" \
   --entrypoint promtool prom/prometheus:v2.53.0 check rules /etc/prometheus/alerts.yml
 ```
 
-**No notifications are sent yet.** There is no Alertmanager in the compose
-file, so these rules evaluate, appear in the Prometheus UI and the `/alerts`
-endpoint, and then stop there. Nothing emails, messages or pages anyone. Wiring
-that up means adding an `alertmanager` service, pointing
-`deploy/prometheus/prometheus.yml` at it, and choosing a receiver. Until then
-the alerting rules are a dashboard, not a phone.
+#### Notifications
+
+Rules that fire into nothing are a dashboard, not a phone. An `alertmanager`
+service runs in the same `observability` profile, and `prometheus.yml` hands it
+every firing alert. It posts to a generic webhook, so it works with whatever
+you already page from:
+
+```bash
+ALERT_WEBHOOK_URL=https://hooks.example.com/services/T000/B000/XXXX \
+  docker compose --profile observability up -d
+```
+
+The URL is substituted into the config at container start, because Alertmanager
+has no environment interpolation. Leave it unset and the service still starts,
+with a null receiver: the rules evaluate and show as firing, and nothing is
+sent. That is deliberate - a config that refuses to start takes the whole
+observability profile down with it, and posting alerts into the void is worse
+than saying plainly that you have not configured a receiver yet.
+
+Alerts are grouped by `alertname` and `severity`, so one database outage
+arrives as one message rather than seven near-simultaneous ones, and
+`send_resolved` is on, so nobody has to be paged back to confirm the page was
+itself the problem. Check what is configured at
+<http://localhost:9093/#/silences>, and validate the template without starting
+anything:
+
+```bash
+docker run --rm -v "$PWD/deploy/alertmanager:/etc/alertmanager:ro" \
+  --entrypoint amtool prom/alertmanager:v0.28.1 check-config \
+  /etc/alertmanager/alertmanager.yml
+```
+
+That checks the template, so the `__ALERT_WEBHOOK_URL__` placeholder is
+expected to be reported as an unsupported scheme. The rendered config is the
+one that matters, and the running service is already using it.
 
 ### Metrics
 
@@ -898,8 +927,22 @@ Prometheus scrapes `GET /metrics/prometheus` on the API, in OpenMetrics text
 format. `GET /metrics` also exists for local debugging.
 
 When `METRICS_TOKEN` is set, `/metrics/prometheus` requires
-`Authorization: Bearer <token>`; Prometheus reads the same variable, so the two
-cannot drift apart. With no token the endpoint is open, which is only safe
+`Authorization: Bearer <token>`. Put the token in a file rather than the
+environment, and the API and Prometheus will read the same one:
+
+```bash
+mkdir -p deploy/secrets
+python -c "import secrets; print(secrets.token_urlsafe(32))" > deploy/secrets/metrics_token
+```
+
+A file is the only thing that works here. Prometheus cannot interpolate an
+environment variable into its config, so a token in `.env` alone would leave
+Prometheus refused with a 401 while the API looked healthy - the protection
+silently blinding the monitoring of the thing it protects. `deploy/secrets` is
+already mounted read-only into both containers, and an absent file is the
+"no token configured" case for each of them.
+
+With no token the endpoint is open, which is only safe
 because the compose file publishes the API port on `127.0.0.1:8000` and the
 `tls` profile's Caddy answers 404 for that path rather than proxying it. A
 hosted deployment has no such edge, so it must set a token.
@@ -922,8 +965,8 @@ Brings up the API (`:8000`), the Streamlit UI (`:8501`), Qdrant and MongoDB.
 The API waits for Qdrant and MongoDB to report healthy before starting, so it
 never boots into its non-durable fallbacks by accident.
 
-Prometheus, Grafana and node-exporter are opt-in, so that first command does
-not need credentials for a dashboard nobody asked for:
+Prometheus, Alertmanager, Grafana and node-exporter are opt-in, so that first
+command does not need credentials for a dashboard nobody asked for:
 
 ```bash
 GRAFANA_ADMIN_PASSWORD=... docker compose --profile observability up -d
@@ -993,7 +1036,11 @@ Python Streamlit UI) and keeps every credential out of the repository.
 4. **Harden once it is up**: `ALLOWED_HOSTS` and `METRICS_TOKEN` are already set
    by the blueprint, and `ENABLE_API_DOCS=false`. If you attach a custom domain,
    add it to `ALLOWED_HOSTS`. Read `METRICS_TOKEN` from the dashboard to scrape
-   `/metrics/prometheus`; without it the endpoint answers 401.
+   `/metrics/prometheus`; without it the endpoint answers 401. On Render the
+   token is a dashboard secret rather than a file, because there is no
+   `deploy/secrets` to share it through - which is fine, since there is no
+   Prometheus alongside it either. Anything scraping from outside has to present
+   the same value.
 
 What the free tier cannot do:
 
