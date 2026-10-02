@@ -169,6 +169,11 @@ TOOLS_IN_USE = {
     "mongodump",
     "mongorestore",
     "promtool",
+    # External binaries this project expects an operator to have. They are not
+    # pip dependencies, so nothing in requirements*.txt would vouch for them,
+    # and the docs legitimately invoke them.
+    "ollama",
+    "sudo",
 }
 
 # Shell builtins and anything that is not really a program invocation.
@@ -178,6 +183,7 @@ SHELL_BUILTINS = {
     "export",
     "set",
     "echo",
+    "printf",
     "mkdir",
     "chmod",
     "chown",
@@ -219,6 +225,15 @@ def test_docs_do_not_recommend_tools_the_project_does_not_use():
     command. Scanning every backticked token instead would flag ordinary
     identifiers like `gpt-4o` or `username`, which are documentation, not
     instructions.
+
+    Membership of the allowlists above is the ONLY exemption. An earlier
+    version also skipped any command that `shutil.which` could resolve, which
+    quietly disarmed the whole check: on a developer machine with black,
+    flake8, isort, mypy and ollama installed globally it passed, and on
+    ubuntu-latest, where none of them exist, it failed on exactly those five.
+    The same commit was green locally and red in CI. Do not reintroduce
+    "installed on this machine" as a synonym for "part of this project" - add
+    external binaries to TOOLS_IN_USE explicitly instead.
     """
     offenders = []
     for markdown in markdown_files():
@@ -241,11 +256,7 @@ def test_docs_do_not_recommend_tools_the_project_does_not_use():
                     ("./", "/", '"', "{", "}", "]", "[")
                 ):
                     continue
-                if (
-                    command in TOOLS_IN_USE
-                    or command in SHELL_BUILTINS
-                    or shutil.which(command)
-                ):
+                if command in TOOLS_IN_USE or command in SHELL_BUILTINS:
                     continue
                 offenders.append(
                     f"{command} (in {markdown.relative_to(ROOT).as_posix()})"

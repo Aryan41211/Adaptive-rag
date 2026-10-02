@@ -325,25 +325,6 @@ Before submitting code:
 
 ## Tools and Automation
 
-### Format Check
-```bash
-# Check PEP 8 compliance
-flake8 src/
-
-# Auto-format code
-black src/
-
-# Sort imports
-isort src/
-```
-
-### Type Checking
-```bash
-# Check type hints
-mypy src/
-```
-
-### Linting
 Ruff is the project's linter and formatter; it is what CI enforces. The rule
 selection lives in `pyproject.toml`.
 
