@@ -45,7 +45,7 @@ EXPOSE 8000
 # Render injects a $PORT that is not 8000; the healthcheck and the server read
 # it from the environment so no config surgery is needed at runtime.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD-SHELL python -c "import os,urllib.request,sys; port=os.environ.get('PORT', '8000'); sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{port}/healthz', timeout=4).status==200 else 1)"
+    CMD python -c "import os,urllib.request,sys; port=os.environ.get('PORT', '8000'); sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{port}/healthz', timeout=4).status==200 else 1)"
 
 # One worker by default; see README for when more are safe.
 #
