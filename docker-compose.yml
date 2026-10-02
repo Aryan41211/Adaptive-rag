@@ -262,9 +262,10 @@ services:
       - api
       - ui
 
-  # Prometheus, Grafana and node-exporter are opt-in. Compose interpolates the
-  # whole file before starting anything, so a required variable in any of these
-  # aborts the whole stack for an operator who never asked for observability.
+  # Prometheus, Alertmanager, Grafana and node-exporter are opt-in. Compose
+  # interpolates the whole file before starting anything, so a required variable
+  # in any of these aborts the whole stack for an operator who never asked for
+  # observability.
   # Start them with:
   #   GRAFANA_ADMIN_PASSWORD=... docker compose --profile observability up -d
   prometheus:
@@ -279,10 +280,81 @@ services:
       # from a path that does not exist inside the container, Prometheus logs a
       # file-not-found, and nothing is ever evaluated - a silent failure.
       - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      # The metrics token, from the same file the API reads.
+      - ./deploy/secrets:/run/secrets:ro
       - prometheus_data:/prometheus
+    # Prometheus has no environment interpolation and treats a missing
+    # bearer_token_file as fatal, so the token is copied to a path this
+    # container owns. An absent or empty secret yields an empty file, which is
+    # the "no token configured" case the API also sees. /tmp because the image
+    # runs as nobody and has no writable /run.
+    # Every $ is doubled: compose interpolates the whole file before starting
+    # anything, so a bare $escaped is replaced with an empty string here and
+    # the script runs with the variable silently missing.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        if [ -s /run/secrets/metrics_token ]; then
+          cp /run/secrets/metrics_token /tmp/metrics_token
+        else
+          : > /tmp/metrics_token
+        fi
+        exec /bin/prometheus "$$@"
+      - --
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=30d
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${ALERTMANAGER_PORT:-9093}:9093"
+    environment:
+      # Left empty by default, and an empty webhook URL is not a valid
+      # Alertmanager config, so the entrypoint below falls back to a null
+      # receiver: the rules still evaluate and show as firing, and nothing is
+      # sent anywhere. That is the honest default - better than a config that
+      # fails to start, and better than posting alerts into the void.
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+    volumes:
+      # Mounted as a template so the unrendered placeholder can never be the
+      # config that actually runs.
+      - ./deploy/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml.template:ro
+      - alertmanager_data:/alertmanager
+    # Every $ is doubled: compose interpolates the whole file before starting
+    # anything, so a bare $ALERT_WEBHOOK_URL would be substituted here - with
+    # whatever the host shell happened to hold, usually nothing.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        if [ -n "$${ALERT_WEBHOOK_URL:-}" ]; then
+          # Two escapes, in this order. YAML single quotes need ' doubled; sed's
+          # replacement side needs \ & and the delimiter escaped, where a bare &
+          # would mean "the whole match". Doing the quotes first keeps sed from
+          # escaping the backslashes that doubling does not introduce.
+          escaped=$(printf '%s' "$$ALERT_WEBHOOK_URL" \
+            | sed -e "s/'/''/g" -e 's/[\\&|]/\\&/g')
+          sed "s|__ALERT_WEBHOOK_URL__|$$escaped|" \
+            /etc/alertmanager/alertmanager.yml.template > /tmp/alertmanager.yml
+        else
+          printf 'route:\n  receiver: "null"\nreceivers:\n  - name: "null"\n' \
+            > /tmp/alertmanager.yml
+        fi
+        exec /bin/alertmanager "$$@"
+      - --
+    command:
+      - --config.file=/tmp/alertmanager.yml
+    depends_on:
+      - prometheus
     logging:
       driver: json-file
       options:
@@ -342,4 +414,5 @@ volumes:
   caddy_data:
   caddy_config:
   prometheus_data:
+  alertmanager_data:
   grafana_data:

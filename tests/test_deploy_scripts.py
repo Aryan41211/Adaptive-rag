@@ -244,10 +244,10 @@ def test_the_default_profile_still_serves_the_application():
 
 
 def test_observability_services_share_one_opt_in_profile():
-    """Three separate profiles would mean three ways to start the same stack."""
+    """Separate profiles would mean separate ways to start the same stack."""
     profiles = {
         tuple(compose()["services"][name].get("profiles", []))
-        for name in ("grafana", "prometheus", "node-exporter")
+        for name in ("grafana", "prometheus", "node-exporter", "alertmanager")
     }
     assert profiles == {("observability",)}, profiles
 
@@ -598,6 +598,144 @@ def test_prometheus_scrapes_the_endpoint_the_stack_exposes():
     prometheus = (DEPLOY / "prometheus" / "prometheus.yml").read_text(encoding="utf-8")
     assert "api:8000" in prometheus, "prometheus does not scrape the api service"
     assert "metrics/prometheus" in prometheus
+
+
+def test_prometheus_can_authenticate_to_the_metrics_endpoint():
+    """
+    The API rejects a scrape that does not present METRICS_TOKEN, so setting it
+    - which a hosted deployment is told to do, because the response carries
+    route names, latency and model spend - left Prometheus with no way to scrape
+    at all. The target went down with a 401 while the API looked perfectly
+    healthy, which is the worst possible shape for a monitoring system: the
+    outage is invisible and the alerting is silenced by the very act of turning
+    on the protection.
+    """
+    scrape = next(
+        job
+        for job in yaml.safe_load(
+            (DEPLOY / "prometheus" / "prometheus.yml").read_text(encoding="utf-8")
+        )["scrape_configs"]
+        if job["job_name"] == "adaptive-rag-api"
+    )
+    assert scrape.get("bearer_token_file"), (
+        "the api scrape sends no credential, so a token-protected endpoint "
+        "cannot be scraped"
+    )
+
+
+def test_prometheus_sends_the_very_token_the_api_checks():
+    """
+    Two copies of a shared secret is two chances to disagree, and the symptom
+    of a mismatch is a 401 with nothing in either log. Tied together here by
+    asserting on the single filename both sides read, so renaming one without
+    the other fails the build rather than production.
+    """
+    config_source = (DEPLOY.parents[0] / "src" / "core" / "config.py").read_text(
+        encoding="utf-8"
+    )
+    entrypoint = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"][
+        "prometheus"
+    ]["entrypoint"][-2]
+    assert "metrics_token" in config_source
+    assert "/run/secrets/metrics_token" in entrypoint
+    assert (
+        "secrets"
+        in yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"][
+            "prometheus"
+        ].get("volumes", [])[2]
+    ), "prometheus does not mount the directory the token is read from"
+
+
+def test_a_missing_token_leaves_the_scrape_working_rather_than_fatal():
+    """
+    Prometheus treats an absent bearer_token_file as a startup error, not a
+    warning, so pointing at the secret unconditionally would break the default
+    first run for everyone who has not set a token yet.
+    """
+    entrypoint = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"][
+        "prometheus"
+    ]["entrypoint"][-2]
+    assert "if [ -s /run/secrets/metrics_token ]" in entrypoint
+    assert ": > /tmp/metrics_token" in entrypoint
+
+
+def test_firing_alerts_are_delivered_somewhere():
+    """
+    Rules with nowhere to go are not alerting. Prometheus evaluates them, lists
+    them as firing in its own UI, and drops them on the floor - which reads as a
+    working setup right up until the incident.
+    """
+    prometheus = yaml.safe_load(
+        (DEPLOY / "prometheus" / "prometheus.yml").read_text(encoding="utf-8")
+    )
+    managers = (prometheus.get("alerting") or {}).get("alertmanagers") or []
+    assert managers, "prometheus.yml routes alerts nowhere"
+    assert any(
+        "alertmanager" in str(config)
+        for manager in managers
+        for config in (manager.get("static_configs") or [])
+    ), f"alertmanagers {managers} does not name the alertmanager service"
+
+
+@pytest.mark.parametrize("service", ["prometheus", "alertmanager"])
+def test_entrypoint_shell_variables_survive_compose_interpolation(service):
+    """
+    Compose interpolates the whole file before it starts anything, including the
+    shell script inside an entrypoint. A bare $escaped is therefore replaced
+    with an empty string on the host, and the container runs a script with a
+    variable silently missing - which is how alertmanager first came up
+    restarting forever with an unrendered placeholder in its config.
+    """
+    entrypoint = compose()["services"][service]["entrypoint"][-2]
+    # Compose substitutes $NAME and ${NAME}, and leaves $( alone - a command
+    # substitution is the shell's business, not compose's.
+    bare = re.search(r"(?<!\$)\$(?=[A-Za-z_{])", entrypoint)
+    assert bare is None, (
+        f"the {service} entrypoint has an unescaped "
+        f"{entrypoint[bare.start() : bare.start() + 12]!r}; compose substitutes it "
+        "before the container ever sees it"
+    )
+
+
+def test_alertmanager_is_opt_in_and_loopback_bound():
+    assert compose()["services"]["alertmanager"].get("profiles") == ["observability"]
+
+
+def test_the_alertmanager_config_ships_a_placeholder_not_an_endpoint():
+    """
+    A committed webhook URL is a secret in git, and `amtool check-config` prints
+    the config it validates - so the URL is substituted at container start.
+    """
+    template = (DEPLOY / "alertmanager" / "alertmanager.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "__ALERT_WEBHOOK_URL__" in template
+    assert "http" not in template, "a real endpoint is committed in alertmanager.yml"
+
+
+def test_the_unrendered_template_is_never_the_config_that_runs():
+    """Otherwise a missed substitution boots Alertmanager with a literal URL."""
+    service = compose()["services"]["alertmanager"]
+    assert str(service["command"][0]).endswith(".yml")
+    template_mount = next(
+        str(volume)
+        for volume in service["volumes"]
+        if "alertmanager.yml" in str(volume)
+    )
+    assert "template" in template_mount
+    assert not str(service["command"][0]).endswith(template_mount.split(":")[-2])
+
+
+def test_an_unset_webhook_degrades_to_a_null_receiver():
+    """
+    An empty url is rejected by Alertmanager as an unsupported scheme, so
+    leaving the receiver out entirely would stop the container starting for
+    every operator who has not configured a webhook yet. A null receiver keeps
+    the stack up and honest: rules evaluate, nothing is sent.
+    """
+    entrypoint = compose()["services"]["alertmanager"]["entrypoint"][-2]
+    assert 'receiver: "null"' in entrypoint
+    assert "else" in entrypoint
 
 
 def test_alert_rules_are_loaded_and_cover_the_failing_signals():

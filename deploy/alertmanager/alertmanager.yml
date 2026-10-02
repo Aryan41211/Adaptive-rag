@@ -1,0 +1,30 @@
+# Alertmanager configuration for the adaptive-rag stack.
+#
+# Prometheus decides *that* something is wrong; this decides *who finds out*.
+# Without it the rules still evaluate and still show as firing in the
+# Prometheus UI, and the notification goes nowhere - the most expensive kind of
+# alerting, because it looks like it is working.
+#
+# The webhook URL is substituted at container start. Alertmanager has no
+# environment interpolation, so this file carries a placeholder rather than a
+# real endpoint: a committed URL would be a secret in git, and every
+# `amtool check-config` would print it back to the terminal.
+route:
+  receiver: webhook
+  # Grouped by rule and severity so that one database outage arrives as one
+  # message rather than seven near-simultaneous ones.
+  group_by: [alertname, severity]
+  # Long enough to ride out a rolling deploy, short enough that a human still
+  # learns about it while the problem is happening.
+  group_wait: 30s
+  group_interval: 5m
+  # A flapping alert should not re-notify every few minutes all afternoon.
+  repeat_interval: 4h
+
+receivers:
+  - name: webhook
+    webhook_configs:
+      - url: '__ALERT_WEBHOOK_URL__'
+        # Silence is the resolution, and nobody wants to be paged back to
+        # confirm the page was itself the problem.
+        send_resolved: true

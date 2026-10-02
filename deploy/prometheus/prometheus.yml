@@ -8,9 +8,21 @@ rule_files:
   # how metrics are collected.
   - /etc/prometheus/alerts.yml
 
+# Without this, firing rules are evaluated and then discarded: Prometheus
+# shows them as active and nobody is ever told.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
 scrape_configs:
   - job_name: "adaptive-rag-api"
     metrics_path: /metrics/prometheus
+    # The API answers a scrape only when the caller presents METRICS_TOKEN.
+    # This path is written at container start from the same secret file the API
+    # reads, so the two cannot disagree - and an empty file is exactly the
+    # "no token configured" case, where the endpoint is open anyway.
+    bearer_token_file: /tmp/metrics_token
     static_configs:
       - targets: ["api:8000"]
 
