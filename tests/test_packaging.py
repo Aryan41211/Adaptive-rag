@@ -144,3 +144,34 @@ def test_the_wheel_actually_contains_the_application(tmp_path):
     assert "Requires-Dist: langchain==0.3.27" in metadata, (
         "the wheel no longer carries the pinned LangChain version"
     )
+
+
+def test_secrets_are_excluded_from_the_docker_build_context():
+    """
+    Not being copied into the final image is not the same as not being sent.
+    Without an ignore rule the whole directory is uploaded to the Docker daemon
+    on every build and persists in its build cache, which is a different (and
+    much larger) blast radius than one image. Verified by dropping a canary in
+    deploy/secrets/ and confirming `COPY . /ctx` no longer picks it up.
+    """
+    ignored = {
+        line.strip()
+        for line in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+    for path in ("deploy/secrets/", "secrets/", ".env"):
+        assert path in ignored, (
+            f".dockerignore does not exclude {path}; credentials placed there "
+            "are uploaded to the Docker daemon on every build"
+        )
+
+
+def test_secrets_are_ignored_by_git():
+    """
+    `git add -A` from a clean checkout should never be able to stage a
+    credential, including one written into a directory nobody remembered to
+    gitignore.
+    """
+    patterns = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "deploy/secrets/*" in patterns, ".gitignore no longer hides deploy/secrets/"
+    assert "\nsecrets/" in patterns, ".gitignore no longer ignores a stray secrets/"

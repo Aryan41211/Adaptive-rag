@@ -28,6 +28,9 @@ env/
 # placeholder is tracked.
 deploy/secrets/*
 !deploy/secrets/.gitkeep
+# A stray top-level secrets/ is easy to create by accident, nothing references
+# it, and `git add -A` would happily commit whatever landed in it.
+secrets/
 
 # IDE
 .idea/

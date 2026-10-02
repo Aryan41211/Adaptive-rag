@@ -15,6 +15,11 @@ tests/
 .env.local
 data/
 backups/
+# Real credentials are mounted at runtime, never baked in. Keep the placeholder
+# out of the build context too: an unignored secret is still uploaded to the
+# Docker daemon on every build and lands in its build cache.
+deploy/secrets/
+secrets/
 description.txt
 *.md
 !README.md
