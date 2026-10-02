@@ -24,7 +24,7 @@ services:
     image: qdrant/qdrant:v1.19.0
     restart: unless-stopped
     ports:
-      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
@@ -47,7 +47,7 @@ services:
     image: mongo:7
     restart: unless-stopped
     ports:
-      - "127.0.0.1:27017:27017"
+      - "127.0.0.1:${MONGO_PORT:-27017}:27017"
     environment:
       # Enabling authentication at all requires creating the root user, which
       # mongo only does on an empty data volume. Adding these to a stack that
@@ -87,7 +87,7 @@ services:
     profiles: ["ollama"]
     restart: unless-stopped
     ports:
-      - "127.0.0.1:11434:11434"
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama_data:/root/.ollama
     deploy:
@@ -110,7 +110,7 @@ services:
     # unauthenticated /metrics/prometheus would all be reachable externally.
     # Public traffic goes through the tls profile's Caddy edge instead.
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:
       # src.core.config points pydantic-settings at this directory, so a file
       # named after a setting wins over .env and keeps the value out of the
@@ -189,7 +189,7 @@ services:
     # internet without Caddy's TLS, HSTS and security headers. The tls profile
     # is what publishes it publicly.
     ports:
-      - "127.0.0.1:8501:8501"
+      - "127.0.0.1:${UI_PORT:-8501}:8501"
     environment:
       # The UI talks to the API over HTTP and performs no validation of these;
       # they are passed through so a single .env serves every service.
@@ -272,7 +272,7 @@ services:
     profiles: ["observability"]
     restart: unless-stopped
     ports:
-      - "127.0.0.1:9090:9090"
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       # Paired with rule_files in prometheus.yml. Without this the rules load
@@ -294,7 +294,7 @@ services:
     profiles: ["observability"]
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       # Cannot be `${GRAFANA_ADMIN_PASSWORD:?...}`: compose interpolates the
@@ -320,7 +320,7 @@ services:
     profiles: ["observability"]
     restart: unless-stopped
     ports:
-      - "127.0.0.1:9100:9100"
+      - "127.0.0.1:${NODE_EXPORTER_PORT:-9100}:9100"
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro

@@ -7,6 +7,7 @@ restore cycle is exercised manually against a live stack - but they catch the
 failure that would otherwise go unnoticed until a recovery.
 """
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -417,7 +418,9 @@ def test_api_is_not_published_on_all_interfaces():
     would be reachable directly, bypassing Caddy entirely.
     """
     ports = compose()["services"]["api"]["ports"]
-    assert "127.0.0.1:8000:8000" in ports
+    # Published on loopback only, and the default host port stays 8000 even
+    # though it is overridable, so a clash elsewhere does not move the API.
+    assert "127.0.0.1:${API_PORT:-8000}:8000" in ports
 
 
 def test_uvicorn_is_not_started_with_a_wildcard_forwarded_allow_list():
@@ -786,3 +789,33 @@ def test_the_publish_job_does_not_wait_on_the_free_tier_live_probes():
     assert "live-tests" not in publish, (
         "a free-tier quota skip must not be able to block an image publish"
     )
+
+
+def test_published_host_ports_are_configurable():
+    """
+    Host ports were hardcoded, so running this stack next to anything else that
+    wanted 8501, 9090 or 3000 meant editing committed YAML. The tempting edit -
+    changing the container port as well - silently breaks the internal wiring
+    that Prometheus, Caddy and the API depend on, and the symptom appears far
+    from the cause: targets down, 404s from the proxy, an empty rules page.
+
+    Every published port must therefore be a variable whose default equals the
+    container port, so an unconfigured checkout behaves exactly as before.
+    """
+    compose = COMPOSE.read_text(encoding="utf-8")
+    published = re.findall(
+        r'^\s*- "127\.0\.0\.1:(?:\$\{(\w+):-(\d+)\}|(\d+)):(\d+)"',
+        compose,
+        re.MULTILINE,
+    )
+    assert published, "no loopback-bound ports found; the pattern needs updating"
+
+    for variable, default, hardcoded, target in published:
+        assert variable, (
+            f"port {hardcoded or default} is hardcoded; make it an overridable "
+            "variable so a host-side clash does not require editing this file"
+        )
+        assert default == target, (
+            f"{variable} defaults to host port {default} but the container "
+            f"listens on {target}; the default mapping changed"
+        )
